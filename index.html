@@ -7,35 +7,29 @@
 
 <style>
   /* =========================================================================
-     POLYMATH CHEATSHEET MAKER
+     POLYMATH CHEATSHEET MAKER  —  v2 with Firebase + draggable images
      -------------------------------------------------------------------------
      Build a printable cheatsheet by laying out modular rectangle tiles on
-     an A4 / Letter / A3 page. Each tile holds rich text and (optionally) a
-     pasted image — drag tiles to reposition, drag corner/edge handles to
-     resize, paste pictures with Ctrl/⌘+V, change font size with A− / A+
-     (bullets and numbers scale with the text), pick a tile colour, etc.
+     an A4 / Letter / A3 page. Each tile holds rich text and (optionally) an
+     image that can be DRAGGED and RESIZED freely inside the tile, with
+     PowerPoint-style snap guides that snap to:
+       • tile centre lines (horizontal + vertical)
+       • tile edges (with a tiny inner margin)
+       • tile quarter lines (25%, 75%)
 
-     This is a single, self-contained HTML file. Everything autosaves to
-     localStorage so a refresh keeps your work. Export → Print/PDF prints
-     the whole sheet at its native page size, with the Polymath logo and
-     copyright footer in the bottom-right of every page.
+     The whole document autosaves to localStorage so a refresh keeps your
+     work, AND can be saved to a Firestore-backed library when signed in
+     with Google. Only the admin (chungzhikai@gmail.com) can access the
+     cloud library. Cheatsheets are stored as JSON documents under
+     `apps/cheatsheetMaker/cheatsheets/{id}`.
 
-     Architectural notes
-     -------------------
-     • One CHEATSHEET = { pageSize, orientation, title, subtitle, tiles[] }
-     • One TILE = { id, x, y, w, h, color, html (rich text), image (slot
-       with placement / scale / offsets) }
-     • Tile coords + dimensions are stored in mm so they're page-relative
-       and resolution-independent. A `mmToPx()` helper converts to screen
-       pixels using the page's actual pixel width.
-     • Paper is rendered as an inert "sheet" div sized via @page-style
-       width × height in mm. Tiles are absolutely positioned inside.
-     • Print mode uses an @page rule injected from JS so the printed PDF
-       picks up the chosen size + orientation exactly.
+     One CHEATSHEET = { pageSize, orientation, title, subtitle, tiles[] }
+     One TILE      = { id, x, y, w, h, color, html, image, fontStep }
+     One IMAGE     = { dataUrl, x, y, w, h }   ← all in mm, relative to
+                                                 the tile body.
      ========================================================================= */
 
   :root {
-    /* Palette — Polymath general (soft orange accent for a "study notes" feel) */
     --bg-page:        #FAFAFA;
     --bg-card:        #FFFFFF;
     --bg-soft:        #F7F7F5;
@@ -50,7 +44,6 @@
     --text-soft:      #7A7A7A;
     --text-faint:     #B0B0B0;
 
-    /* Soft warm orange accent for "cheatsheet" mood */
     --accent-soft:    #FFE0B2;
     --accent:         #FFB74D;
     --accent-strong:  #FB8C00;
@@ -65,20 +58,24 @@
     --danger-strong:  #C62828;
     --danger-bg:      #FFEBEE;
 
-    /* Tile colour palette — pastel chips users pick from */
-    --tile-1: #FFFFFF;  /* white */
-    --tile-2: #FFF3E0;  /* warm cream */
-    --tile-3: #E3F2FD;  /* science blue */
-    --tile-4: #F1F8E9;  /* math mint */
-    --tile-5: #F3E5F5;  /* lavender */
-    --tile-6: #FFEBEE;  /* coral */
-    --tile-7: #FFF9C4;  /* sunny */
-    --tile-8: #E0F2F1;  /* teal */
+    --info-soft:      #BBDEFB;
+    --info-strong:    #1976D2;
+    --info-bg:        #E3F2FD;
 
-    /* Shadows */
+    /* Tile colour palette */
+    --tile-1: #FFFFFF;
+    --tile-2: #FFF3E0;
+    --tile-3: #E3F2FD;
+    --tile-4: #F1F8E9;
+    --tile-5: #F3E5F5;
+    --tile-6: #FFEBEE;
+    --tile-7: #FFF9C4;
+    --tile-8: #E0F2F1;
+
     --shadow-1: 0 1px 2px rgba(0,0,0,0.05), 0 2px 8px rgba(0,0,0,0.06);
     --shadow-2: 0 2px 4px rgba(0,0,0,0.06), 0 6px 18px rgba(0,0,0,0.09);
     --shadow-3: 0 4px 8px rgba(0,0,0,0.07), 0 12px 32px rgba(0,0,0,0.12);
+    --shadow-modal: 0 20px 60px rgba(0,0,0,0.25);
 
     --space-2xs: 4px;
     --space-xs:  8px;
@@ -137,6 +134,7 @@
     border-bottom: 1px solid var(--border-faint);
     box-shadow: var(--shadow-1);
     position: sticky; top: 0; z-index: 100;
+    gap: var(--space-sm);
   }
   .polymath-logo {
     height: 56px;
@@ -152,7 +150,54 @@
     display: block; margin-top: 2px; font-size: 0.78rem;
     font-weight: 400; color: var(--text-soft);
   }
-  .header-tools { display: flex; gap: var(--space-xs); }
+  .header-tools { display: flex; gap: var(--space-xs); align-items: center; }
+
+  /* =========================================================================
+     AUTH PILL  (Google sign-in / signed-in user)
+     ========================================================================= */
+  .auth-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 14px;
+    background: var(--bg-card);
+    border: 1.5px solid var(--border-soft);
+    border-radius: var(--radius-pill);
+    font-size: 0.85rem; font-weight: 600;
+    box-shadow: var(--shadow-1);
+    transition: all var(--transition);
+  }
+  .auth-pill:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-2);
+    border-color: var(--accent);
+  }
+  .auth-pill img {
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    border: 1.5px solid var(--border-faint);
+  }
+  .auth-pill .auth-email {
+    color: var(--text-medium);
+    font-weight: 500;
+    max-width: 180px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .auth-pill .auth-status {
+    font-size: 0.7rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+  }
+  .auth-pill .auth-status.admin {
+    background: var(--success-bg);
+    color: var(--success-strong);
+  }
+  .auth-pill .auth-status.viewer {
+    background: var(--info-bg);
+    color: var(--info-strong);
+  }
+  .google-icon {
+    width: 18px; height: 18px;
+  }
 
   /* =========================================================================
      BUTTONS
@@ -180,6 +225,10 @@
     background: var(--accent-strong); color: #fff; border-color: var(--accent-strong);
   }
   .btn-primary:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-success {
+    background: var(--success-strong); color: #fff; border-color: var(--success-strong);
+  }
+  .btn-success:hover { background: var(--success); border-color: var(--success); color: #fff; }
   .btn-danger { color: var(--danger-strong); border-color: var(--danger-soft); }
   .btn-danger:hover { background: var(--danger-bg); color: var(--danger-strong); border-color: var(--danger); }
   .btn-sm { padding: 6px 12px; font-size: 0.82rem; }
@@ -187,7 +236,7 @@
   .btn:disabled, .btn[disabled] { opacity: 0.4; cursor: not-allowed; }
 
   /* =========================================================================
-     CONTROL BAR (page settings, sheet title, actions)
+     CONTROL BAR
      ========================================================================= */
   .control-bar {
     max-width: 1500px; margin: 0 auto;
@@ -247,10 +296,23 @@
     font-size: 0.78rem; font-weight: 600;
   }
   .save-state.saving { background: var(--accent-bg); color: var(--accent-strong); border-color: var(--accent-soft); }
+  .save-state.error  { background: var(--danger-bg); color: var(--danger-strong); border-color: var(--danger-soft); }
   .save-state .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
+  /* Doc-name pill — the current cloud cheatsheet name */
+  .doc-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px;
+    background: var(--info-bg);
+    color: var(--info-strong);
+    border: 1px solid var(--info-soft);
+    border-radius: var(--radius-pill);
+    font-size: 0.78rem; font-weight: 600;
+  }
+  .doc-pill .icon { font-size: 0.9rem; }
+
   /* =========================================================================
-     PAGE WORKSPACE — paper sheet with absolutely-positioned tiles inside
+     WORKSPACE
      ========================================================================= */
   .workspace {
     max-width: 1500px; margin: 0 auto;
@@ -260,11 +322,8 @@
   }
 
   .sheet-wrap {
-    /* Scaling container — the actual sheet uses real mm dimensions for
-       the printer; we scale this wrapper down via CSS transform so it
-       fits on screen. The transform is set inline by JS. */
     transform-origin: top center;
-    margin-bottom: -2vh; /* swallow some empty space from the scale */
+    margin-bottom: -2vh;
   }
 
   .sheet {
@@ -272,18 +331,14 @@
     background: #fff;
     box-shadow: var(--shadow-2);
     border-radius: 4px;
-    /* Width / height set inline by JS based on page size + orientation. */
     width: var(--sheet-w, 210mm);
     height: var(--sheet-h, 297mm);
     overflow: hidden;
-    /* The interior grid (subtle dotted background) helps users align tiles
-       visually. Each cell = 5mm. */
     background-image:
       radial-gradient(circle at 1px 1px, #DDD 0.7px, transparent 0);
     background-size: 5mm 5mm;
   }
 
-  /* Safe-print zone outline — dashed, behind tiles */
   .sheet-safe-zone {
     position: absolute;
     inset: var(--sheet-margin, 10mm);
@@ -293,7 +348,6 @@
     z-index: 0;
   }
 
-  /* Sheet header — title + subtitle drawn on the page */
   .sheet-header {
     position: absolute;
     left: var(--sheet-margin, 10mm);
@@ -321,7 +375,6 @@
     width: 30mm;
   }
 
-  /* Footer logo + copyright on every printed sheet */
   .sheet-footer-logo {
     position: absolute;
     right: var(--sheet-margin, 10mm);
@@ -348,10 +401,6 @@
 
   /* =========================================================================
      TILE
-     -------------------------------------------------------------------------
-     Modular rectangle. Absolutely-positioned inside the sheet, in mm.
-     Has a header strip (drag handle + delete) + body (rich text + image),
-     8 resize handles (visible on hover or when selected), per-tile colour.
      ========================================================================= */
   .tile {
     position: absolute;
@@ -360,7 +409,7 @@
     border-radius: 4px;
     box-shadow: 0 1px 2px rgba(0,0,0,0.06);
     display: flex; flex-direction: column;
-    overflow: visible; /* handles need to extend slightly outside */
+    overflow: visible;
     transition: box-shadow 0.15s ease, border-color 0.15s ease;
     z-index: 1;
   }
@@ -373,7 +422,6 @@
   .tile.dragging { transition: none; opacity: 0.85; cursor: grabbing; }
   .tile.resizing { transition: none; }
 
-  /* Header strip — visible on hover or selection */
   .tile-header {
     height: 18px; flex-shrink: 0;
     display: flex; align-items: center; justify-content: space-between;
@@ -406,24 +454,20 @@
   .tile-mini-btn:hover { background: rgba(0,0,0,0.08); color: var(--text-dark); }
   .tile-mini-btn.danger:hover { background: var(--danger-bg); color: var(--danger-strong); }
 
-  /* Tile body — rich-text + image */
+  /* TILE BODY is the positioning context for the image. The image is
+     absolutely positioned in mm relative to the body, so we can drag it
+     anywhere inside. */
   .tile-body {
     flex: 1;
     padding: 8px 10px;
     overflow: hidden;
+    position: relative;
     font-size: var(--tile-font, 0.95rem);
     line-height: 1.4;
     color: var(--text-dark);
-    /* Stacking order driven by data attribute: 'above' | 'below' */
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
     min-height: 0;
   }
-  .tile-body[data-placement="above"] { flex-direction: column-reverse; }
 
-  /* The editable text. Always contenteditable when the tile is in
-     edit mode; we toggle the attribute from JS. */
   .tile-text {
     outline: none;
     min-height: 1.2em;
@@ -431,6 +475,8 @@
     transition: background 0.15s ease, box-shadow 0.15s ease;
     word-break: break-word;
     overflow-wrap: anywhere;
+    position: relative;
+    z-index: 1;
   }
   .tile-text:empty::before {
     content: 'Type your notes here…';
@@ -439,11 +485,9 @@
     pointer-events: none;
   }
   .tile-text:focus {
-    background: rgba(255,255,255,0.9);
+    background: rgba(255,255,255,0.92);
     box-shadow: 0 0 0 1px var(--accent-soft);
   }
-
-  /* List spacing in em so bullets/numbers scale with the text. */
   .tile-text ul,
   .tile-text ol {
     margin: 0.35em 0 0.35em 1.6em;
@@ -453,28 +497,30 @@
   .tile-text p { margin-bottom: 0.4em; }
   .tile-text p:last-child { margin-bottom: 0; }
 
-  /* Image slot inside a tile */
+  /* Image wrapper is absolutely positioned inside the tile-body in mm. */
   .tile-image-wrap {
-    position: relative;
-    align-self: center;
-    /* Width set inline (scale × tile body width). */
-    max-width: 100%;
+    position: absolute;
+    z-index: 2; /* sits above text by default */
+    border-radius: 2px;
+    transition: outline 0.12s ease;
+    cursor: move;
+  }
+  .tile-image-wrap.image-selected {
+    outline: 1.5px dashed var(--accent-strong);
+    outline-offset: 2px;
+    z-index: 5;
   }
   .tile-image-wrap img {
-    width: 100%;
-    height: auto;
+    width: 100%; height: 100%;
     display: block;
+    object-fit: contain;
     pointer-events: none;
     user-select: none;
-  }
-  .tile-image-shield {
-    position: absolute; inset: 0;
-    cursor: move;
-    z-index: 4;
+    border-radius: 2px;
   }
 
-  /* PowerPoint-style resize handles (8 around the perimeter). Hidden
-     until the tile is selected. */
+  /* PowerPoint-style resize handles (8 around the perimeter) for the
+     TILE itself. Only visible when the tile is selected. */
   .tile-handle {
     position: absolute;
     width: 9px; height: 9px;
@@ -497,7 +543,7 @@
   .tile-handle.sw { bottom: -5px; left: -5px;     cursor: nesw-resize; }
   .tile-handle.w  { top: 50%;     left: -5px;     transform: translateY(-50%); cursor: ew-resize; }
 
-  /* For image handles inside a tile (when the tile's image is selected). */
+  /* Resize handles for the IMAGE inside a selected tile. */
   .tile-image-handle {
     position: absolute;
     width: 8px; height: 8px;
@@ -507,9 +553,7 @@
     z-index: 6;
     box-shadow: 0 1px 2px rgba(0,0,0,0.2);
     opacity: 0;
-    transition: opacity var(--transition-fast);
   }
-  .tile-image-wrap.image-selected { outline: 1.4px dashed var(--accent-strong); outline-offset: 1px; }
   .tile-image-wrap.image-selected .tile-image-handle { opacity: 1; }
   .tile-image-handle.nw { top: -4px;    left: -4px;     cursor: nwse-resize; }
   .tile-image-handle.n  { top: -4px;    left: 50%;      transform: translateX(-50%); cursor: ns-resize; }
@@ -520,8 +564,7 @@
   .tile-image-handle.sw { bottom: -4px; left: -4px;     cursor: nesw-resize; }
   .tile-image-handle.w  { top: 50%;     left: -4px;     transform: translateY(-50%); cursor: ew-resize; }
 
-  /* Snap guides — coloured lines drawn over the sheet while dragging.
-     JS positions and toggles them. */
+  /* SNAP guides — for tile-level snapping (relative to sheet). */
   .snap-guide {
     position: absolute;
     background: var(--accent-strong);
@@ -535,7 +578,21 @@
   .snap-guide.active { display: block; }
   .snap-guide.center { background: var(--success-strong); box-shadow: 0 0 5px rgba(67,160,71,0.6); }
 
-  /* Live measurement pill while dragging */
+  /* Image snap guides — drawn inside the tile body. Different colour so
+     they're visually distinct from tile-level guides. */
+  .img-snap-guide {
+    position: absolute;
+    background: var(--info-strong);
+    box-shadow: 0 0 4px rgba(25,118,210,0.6);
+    pointer-events: none;
+    z-index: 7;
+    display: none;
+  }
+  .img-snap-guide.v { width: 1px; height: 100%; top: 0; }
+  .img-snap-guide.h { height: 1px; width: 100%; left: 0; }
+  .img-snap-guide.active { display: block; }
+  .img-snap-guide.center { background: var(--success-strong); box-shadow: 0 0 5px rgba(67,160,71,0.6); }
+
   .drag-readout {
     position: absolute;
     background: #1A1A1A;
@@ -553,13 +610,13 @@
   .drag-readout.active { display: block; }
 
   /* =========================================================================
-     FLOATING TILE INSPECTOR  (appears beside selected tile)
+     INSPECTOR
      ========================================================================= */
   .inspector {
     position: fixed;
     top: 84px;
     right: 24px;
-    width: 280px;
+    width: 300px;
     max-height: calc(100vh - 110px);
     background: var(--bg-card);
     border: 1.5px solid var(--border-soft);
@@ -605,7 +662,6 @@
     color: var(--text-soft);
   }
 
-  /* Inline rich-text toolbar inside the inspector */
   .rt-toolbar {
     display: flex; flex-wrap: wrap; gap: 4px;
     padding: 6px;
@@ -614,7 +670,7 @@
     border-radius: var(--radius-md);
   }
   .rt-group { display: flex; gap: 2px; padding-right: 6px; border-right: 1px solid var(--border-soft); }
-  .rt-group:last-child { border-right: none; }
+  .rt-group:last-child { border-right: none; padding-right: 0; }
   .rt-btn {
     min-width: 28px; height: 28px;
     padding: 0 7px;
@@ -647,7 +703,6 @@
     cursor: pointer;
   }
 
-  /* Colour-chip picker for tile background */
   .colour-grid {
     display: grid;
     grid-template-columns: repeat(8, 1fr);
@@ -663,7 +718,6 @@
   .colour-chip:hover { transform: scale(1.08); border-color: var(--accent); }
   .colour-chip.active { border-color: var(--accent-strong); box-shadow: 0 0 0 2px var(--accent-soft); }
 
-  /* Image picker zone */
   .insp-image-zone {
     border: 2px dashed var(--border-medium);
     border-radius: var(--radius-md);
@@ -685,10 +739,13 @@
   .insp-image-zone img {
     max-height: 80px; margin: 0 auto;
   }
+  .insp-image-zone.has-image {
+    padding: 8px;
+  }
 
   .insp-row {
     display: grid;
-    grid-template-columns: 70px 1fr 50px;
+    grid-template-columns: 70px 1fr 60px;
     gap: 8px;
     align-items: center;
   }
@@ -709,15 +766,10 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .insp-toggle-row {
+  .insp-actions-row {
     display: flex; gap: 6px;
   }
-  .insp-toggle-row .btn-sm { flex: 1; }
-  .insp-toggle-row .btn-sm.active {
-    background: var(--accent-strong);
-    color: #fff;
-    border-color: var(--accent-strong);
-  }
+  .insp-actions-row > * { flex: 1; }
 
   /* =========================================================================
      EMPTY STATE
@@ -743,7 +795,7 @@
   }
 
   /* =========================================================================
-     TOAST
+     TOASTS
      ========================================================================= */
   #toastStack {
     position: fixed; bottom: 20px; right: 20px;
@@ -763,18 +815,182 @@
   }
   .toast.success { background: var(--success-strong); }
   .toast.error { background: var(--danger-strong); }
+  .toast.info { background: var(--info-strong); }
   @keyframes toast-in { to { opacity: 1; transform: translateY(0); } }
   @keyframes toast-out { to { opacity: 0; transform: translateY(6px); } }
 
   /* =========================================================================
-     PRINT STYLES
+     MODAL — used for cheatsheet library, save-as, etc.
      ========================================================================= */
-  /* The @page rule itself is injected into #pagePrintRule by JS so it
-     matches the chosen page size + orientation. */
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(20, 20, 20, 0.55);
+    backdrop-filter: blur(3px);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 1500;
+    padding: var(--space-lg);
+    animation: fadein 0.18s ease;
+  }
+  .modal-backdrop.open { display: flex; }
+  @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
+  .modal {
+    background: var(--bg-card);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-modal);
+    max-width: 720px;
+    width: 100%;
+    max-height: 86vh;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    animation: slidein 0.22s ease;
+  }
+  @keyframes slidein {
+    from { opacity: 0; transform: translateY(10px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .modal-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: var(--space-md) var(--space-lg);
+    border-bottom: 1px solid var(--border-faint);
+    background: var(--bg-soft);
+  }
+  .modal-header h3 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-dark);
+    letter-spacing: 0.01em;
+  }
+  .modal-header h3 small {
+    display: block;
+    font-weight: 400;
+    font-size: 0.78rem;
+    color: var(--text-soft);
+    margin-top: 2px;
+  }
+  .modal-body {
+    padding: var(--space-md) var(--space-lg);
+    overflow-y: auto;
+    flex: 1;
+  }
+  .modal-footer {
+    padding: var(--space-sm) var(--space-lg);
+    border-top: 1px solid var(--border-faint);
+    background: var(--bg-soft);
+    display: flex; justify-content: flex-end; gap: var(--space-xs);
+  }
+  .modal-close {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    color: var(--text-soft);
+    font-size: 1.1rem;
+    transition: background var(--transition-fast);
+  }
+  .modal-close:hover { background: var(--border-faint); color: var(--text-dark); }
+
+  /* Library list */
+  .lib-toolbar {
+    display: flex; gap: var(--space-xs); margin-bottom: var(--space-md);
+  }
+  .lib-search {
+    flex: 1;
+    padding: 8px 14px;
+    border: 1.5px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    font-size: 0.9rem;
+  }
+  .lib-search:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .lib-empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-soft);
+    font-size: 0.95rem;
+  }
+  .lib-empty .lib-empty-icon {
+    font-size: 3rem;
+    opacity: 0.4;
+    margin-bottom: 12px;
+  }
+
+  .lib-list {
+    display: flex; flex-direction: column;
+    gap: 8px;
+  }
+  .lib-item {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    background: var(--bg-card);
+    border: 1.5px solid var(--border-faint);
+    border-radius: var(--radius-md);
+    transition: all var(--transition-fast);
+  }
+  .lib-item:hover {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+    box-shadow: var(--shadow-1);
+  }
+  .lib-item.current {
+    border-color: var(--success-strong);
+    background: var(--success-bg);
+  }
+  .lib-item.current .lib-title-row::before {
+    content: '● ';
+    color: var(--success-strong);
+    font-weight: 700;
+  }
+  .lib-title-row {
+    font-weight: 700;
+    color: var(--text-dark);
+    margin-bottom: 2px;
+    font-size: 0.96rem;
+  }
+  .lib-meta {
+    font-size: 0.78rem;
+    color: var(--text-soft);
+  }
+  .lib-meta b { color: var(--text-medium); font-weight: 600; }
+  .lib-actions { display: flex; gap: 4px; }
+
+  /* Save-as form */
+  .form-row {
+    display: flex; flex-direction: column; gap: 4px;
+    margin-bottom: var(--space-md);
+  }
+  .form-row label {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-soft);
+  }
+  .form-row input[type="text"], .form-row textarea {
+    padding: 10px 14px;
+    border: 1.5px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    font-size: 0.95rem;
+  }
+  .form-row input[type="text"]:focus, .form-row textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  /* =========================================================================
+     PRINT
+     ========================================================================= */
+  /* @page rule itself is injected at runtime into #pagePrintRule. */
   @media print {
     body { background: #fff; }
     .polymath-header, .control-bar, .inspector, #toastStack,
-    .empty-state-overlay { display: none !important; }
+    .modal-backdrop, .empty-state-overlay { display: none !important; }
     .workspace { padding: 0; max-width: none; gap: 0; }
     .sheet-wrap {
       transform: none !important;
@@ -785,21 +1001,20 @@
       box-shadow: none;
       border-radius: 0;
       page-break-after: always;
-      background-image: none; /* hide the dotted grid */
+      background-image: none;
     }
     .sheet:last-child { page-break-after: auto; }
     .sheet-safe-zone { display: none; }
     .tile {
       box-shadow: none !important;
-      border-color: var(--tile-border, #BBB) !important;
       transition: none !important;
     }
     .tile.selected { outline: none; box-shadow: none !important; }
-    .tile-header { display: none !important; } /* hide the drag chrome */
+    .tile-header { display: none !important; }
     .tile-handle, .tile-image-handle { display: none !important; }
-    .tile-image-shield { display: none !important; }
+    .tile-image-wrap.image-selected { outline: none !important; }
     .tile-body { padding: 8px 10px; }
-    .snap-guide, .drag-readout { display: none !important; }
+    .snap-guide, .img-snap-guide, .drag-readout { display: none !important; }
     .sheet-footer-logo, .sheet-footer-notice {
       print-color-adjust: exact;
       -webkit-print-color-adjust: exact;
@@ -817,8 +1032,7 @@
   }
 </style>
 
-<!-- Dynamic @page rule — JS writes the chosen page size into this element
-     so the printed PDF uses the right paper. -->
+<!-- Dynamic @page rule -->
 <style id="pagePrintRule">@page { size: A4 portrait; margin: 0; }</style>
 </head>
 <body>
@@ -830,10 +1044,14 @@
        alt="Polymath Learning Centre" />
   <div class="header-title">
     Polymath Cheatsheet Maker
-    <small>Build a study sheet from drag-and-resize tiles</small>
+    <small>Build a study sheet from drag-and-resize tiles · saved to the Polymath cloud</small>
   </div>
   <div class="header-tools">
-    <span class="save-state" id="saveState"><span class="dot"></span><span id="saveStateText">Saved</span></span>
+    <span class="save-state" id="saveState"><span class="dot"></span><span id="saveStateText">Saved locally</span></span>
+    <button class="auth-pill" id="authPill" title="Sign in to save to the cloud library">
+      <svg class="google-icon" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.91c1.7-1.57 2.69-3.88 2.69-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.95-2.18l-2.91-2.26c-.81.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.02-3.7H.96v2.32A8.99 8.99 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.98 10.72A5.41 5.41 0 0 1 3.68 9c0-.6.1-1.18.3-1.72V4.96H.96A9 9 0 0 0 0 9c0 1.45.35 2.82.96 4.04l3.02-2.32z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A8.97 8.97 0 0 0 9 0 8.99 8.99 0 0 0 .96 4.96L3.98 7.28C4.68 5.16 6.66 3.58 9 3.58z"/></svg>
+      <span id="authPillText">Sign in</span>
+    </button>
     <button class="btn btn-icon" id="printBtn" title="Print / Export PDF">🖨</button>
   </div>
 </header>
@@ -865,7 +1083,15 @@
       <label>Tiles</label>
       <button class="btn btn-sm btn-primary" id="addTileBtn">＋ Add tile</button>
       <button class="btn btn-sm" id="addPageBtn" title="Append another page to the cheatsheet">＋ Add page</button>
-      <button class="btn btn-sm btn-danger" id="deletePageBtn" title="Delete the current page">🗑 Delete page</button>
+      <button class="btn btn-sm btn-danger" id="deletePageBtn" title="Delete the last page">🗑 Delete page</button>
+    </div>
+
+    <div class="ctl-group" id="libraryGroup">
+      <label>Library</label>
+      <button class="btn btn-sm btn-success" id="openLibraryBtn" disabled title="Sign in to use the cloud library">📚 Open</button>
+      <button class="btn btn-sm" id="newCloudBtn" disabled title="Sign in to use the cloud library">✚ New</button>
+      <button class="btn btn-sm btn-primary" id="saveCloudBtn" disabled title="Sign in to save to the cloud library">💾 Save</button>
+      <span class="doc-pill" id="docPill" style="display:none;"><span class="icon">📄</span><span id="docPillText">Untitled</span></span>
     </div>
 
     <div class="ctl-group">
@@ -895,11 +1121,11 @@
 <!-- ===================== WORKSPACE ===================== -->
 <main class="workspace">
   <div class="sheet-wrap" id="sheetWrap">
-    <!-- Sheets are inserted here by JS, one per page. -->
+    <!-- Sheets inserted here by JS -->
   </div>
 </main>
 
-<!-- ===================== INSPECTOR (floating) ===================== -->
+<!-- ===================== INSPECTOR ===================== -->
 <aside class="inspector" id="inspector">
   <div class="inspector-header">
     <h4>Tile properties</h4>
@@ -907,7 +1133,6 @@
   </div>
   <div class="inspector-body">
 
-    <!-- Text formatting -->
     <div class="insp-section">
       <span class="insp-label">Format</span>
       <div class="rt-toolbar" id="rtToolbar">
@@ -953,31 +1178,31 @@
       </div>
     </div>
 
-    <!-- Tile background colour -->
     <div class="insp-section">
       <span class="insp-label">Tile colour</span>
       <div class="colour-grid" id="colourGrid"></div>
     </div>
 
-    <!-- Image slot -->
     <div class="insp-section">
       <span class="insp-label">Picture</span>
       <div class="insp-image-zone" id="imageZone" tabindex="0">
         📷 Click here, then paste a picture (Ctrl+V / ⌘+V) — or drop one
       </div>
-      <div class="insp-toggle-row" id="imagePlacementRow" style="display:none;">
-        <button class="btn btn-sm" data-place="above">↑ Above text</button>
-        <button class="btn btn-sm" data-place="below">↓ Below text</button>
-      </div>
       <div class="insp-row" id="imageSizeRow" style="display:none;">
         <label>Size</label>
-        <input type="range" id="imageScaleSlider" min="30" max="100" step="1" value="80" />
+        <input type="range" id="imageScaleSlider" min="15" max="100" step="1" value="80" />
         <span class="read" id="imageScaleRead">80%</span>
       </div>
-      <button class="btn btn-sm btn-danger" id="removeImageBtn" style="display:none;">Remove picture</button>
+      <div class="insp-actions-row" id="imageActionsRow" style="display:none;">
+        <button class="btn btn-sm" id="centerImageBtn" title="Centre the image inside the tile">⊞ Centre</button>
+        <button class="btn btn-sm" id="fitImageBtn" title="Fit the image to the tile width">↔ Fit width</button>
+        <button class="btn btn-sm btn-danger" id="removeImageBtn">🗑 Remove</button>
+      </div>
+      <div style="font-size:0.72rem;color:var(--text-soft);text-align:center;font-style:italic;margin-top:4px;" id="imageHint" style="display:none;">
+        Tip: drag the image inside the tile. Snap lines show centre / edges / quarters.
+      </div>
     </div>
 
-    <!-- Position + size readouts (for the selected tile) -->
     <div class="insp-section">
       <span class="insp-label">Tile geometry</span>
       <div class="insp-row">
@@ -1002,15 +1227,103 @@
 
 <input type="file" id="hiddenImageInput" accept="image/*" style="display:none" />
 
+<!-- ===================== LIBRARY MODAL ===================== -->
+<div class="modal-backdrop" id="libraryModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>📚 Cheatsheet Library
+        <small>All cheatsheets saved to the Polymath cloud</small>
+      </h3>
+      <button class="modal-close" data-close-library>✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="lib-toolbar">
+        <input type="text" class="lib-search" id="librarySearch" placeholder="🔍 Search by title, subtitle…" />
+        <button class="btn btn-sm btn-success" id="libraryNewBtn">＋ New cheatsheet</button>
+        <button class="btn btn-sm" id="libraryRefreshBtn">↻ Refresh</button>
+      </div>
+      <div id="libraryListWrap">
+        <div class="lib-empty" id="libraryEmpty">
+          <div class="lib-empty-icon">📚</div>
+          <div>Loading your cheatsheets…</div>
+        </div>
+        <div class="lib-list" id="libraryList"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-sm" data-close-library>Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== SAVE-AS MODAL ===================== -->
+<div class="modal-backdrop" id="saveAsModal">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-header">
+      <h3>💾 Save to library
+        <small>Stored under apps/cheatsheetMaker/cheatsheets in the Polymath Firebase project</small>
+      </h3>
+      <button class="modal-close" data-close-saveas>✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>Cheatsheet name (shown in the library)</label>
+        <input type="text" id="saveAsName" placeholder="e.g. P5 Fractions Cheatsheet" />
+      </div>
+      <div class="form-row">
+        <label>Optional notes</label>
+        <textarea id="saveAsNotes" rows="3" placeholder="Anything you want to remember about this cheatsheet…" style="resize:vertical;font-family:inherit;"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-sm" data-close-saveas>Cancel</button>
+      <button class="btn btn-sm btn-primary" id="saveAsConfirmBtn">💾 Save</button>
+    </div>
+  </div>
+</div>
+
 <div id="toastStack"></div>
+
+<!-- ===================== FIREBASE SDK ===================== -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script>
 'use strict';
-/* =========================================================================
-   POLYMATH CHEATSHEET MAKER — application script
-   ========================================================================= */
 
-/* ---------- Toasts ---------- */
+/* =========================================================================
+   FIREBASE INITIALISATION
+   -------------------------------------------------------------------------
+   Polymath shared Firebase project. We only need Auth (Google sign-in) and
+   Firestore here — no Storage uploads, since images are embedded as base64
+   data URLs inside the cheatsheet document for portability.
+
+   Documents live at:  apps/cheatsheetMaker/cheatsheets/{cheatsheetId}
+   Each document has shape:
+     { ownerUid, ownerEmail, title, subtitle, notes,
+       state: { ... whole cheatsheet state ... },
+       createdAt, updatedAt }
+   ========================================================================= */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyAUSI3Uh28IeqASEp0JhH4QPaVt-O3meBo",
+  authDomain: "mathgen--app.firebaseapp.com",
+  projectId: "mathgen--app",
+  storageBucket: "mathgen--app.firebasestorage.app",
+  messagingSenderId: "165654161198",
+  appId: "1:165654161198:web:16c8bd60eb3a2aa7edbcbf",
+  measurementId: "G-0MWZFG211D"
+};
+const ADMIN_EMAIL = 'chungzhikai@gmail.com';
+const COLLECTION_PATH = 'apps/cheatsheetMaker/cheatsheets';
+
+firebase.initializeApp(FIREBASE_CONFIG);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+/* =========================================================================
+   TOASTS
+   ========================================================================= */
 function toast(message, kind) {
   const stack = document.getElementById('toastStack');
   const el = document.createElement('div');
@@ -1020,27 +1333,25 @@ function toast(message, kind) {
   setTimeout(() => el.remove(), 3000);
 }
 
-/* ---------- Misc helpers ---------- */
+/* =========================================================================
+   IDs and helpers
+   ========================================================================= */
 let uidCounter = 0;
 const newId = () => 'id_' + Date.now().toString(36) + '_' + (++uidCounter).toString(36);
-
-function escapeAttr(s) {
-  return String(s || '')
-    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
 
 function clamp(n, lo, hi) {
   if (!Number.isFinite(+n)) return lo;
   return Math.max(lo, Math.min(hi, +n));
 }
+function round1(n) { return Math.round(n * 10) / 10; }
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 /* =========================================================================
    PAGE SIZES
-   -------------------------------------------------------------------------
-   Real-world page dimensions in millimetres. The user picks one from the
-   "Page" selector; the sheet renders at exact mm dimensions and the print
-   @page rule is updated to match so the PDF prints at the right size.
    ========================================================================= */
 const PAGE_SIZES = {
   a3:      { w: 297,   h: 420,   label: 'A3' },
@@ -1057,20 +1368,21 @@ const COPYRIGHT_NOTICE =
 const POLYMATH_LOGO_URL =
   'https://dl.dropboxusercontent.com/scl/fi/h40yjlyg8ldefwfaa3dib/polymath-logo-sticker.png?rlkey=o1ra4taqy79gt9t8u096v82zj';
 
-const PAGE_MARGIN_MM = 10; // safe-print margin
+const PAGE_MARGIN_MM = 10;
 
-/* =========================================================================
-   STATE
-   -------------------------------------------------------------------------
-   One cheatsheet doc = title/subtitle + page-size choice + array of pages,
-   where each page has an array of tiles. Tile coords + dimensions are all
-   in mm so they're page-relative and resolution-independent.
-   ========================================================================= */
 const TILE_COLOURS = [
   '#FFFFFF', '#FFF3E0', '#E3F2FD', '#F1F8E9',
   '#F3E5F5', '#FFEBEE', '#FFF9C4', '#E0F2F1',
 ];
 
+/* =========================================================================
+   STATE
+   -------------------------------------------------------------------------
+   The image model has changed from { placement, scale } → { x, y, w, h }
+   in mm relative to the tile body (after the 8px-ish text padding). This
+   lets the user drag the image around inside the tile freely. We keep
+   backward compatibility by upgrading any old state on load.
+   ========================================================================= */
 const state = {
   title: 'My Cheatsheet',
   subtitle: '',
@@ -1078,31 +1390,26 @@ const state = {
   orientation: 'portrait',
   showLogo: true,
   showCopyright: true,
-  pages: [ /* { id, tiles: [Tile] } */ ],
+  pages: [],
   selectedTileId: null,
-  selectedImageTileId: null, // separate selection for image-within-tile
-  zoneFontStep: {}, // per-tile current font step for A+ / A- bookkeeping
+  selectedImageTileId: null,
+  /* Cloud document tracking */
+  cloudDocId: null,        // current cheatsheet doc ID (null = not saved to cloud)
+  cloudDocTitle: null,     // display name as stored in Firestore
+  cloudDocLoaded: false,   // true when state matches the saved cloud version
 };
 
-const STORAGE_KEY = 'polymath.cheatsheet.v1';
+const STORAGE_KEY = 'polymath.cheatsheet.v2';
 let saveTimer = null;
 
 function persist() {
   clearTimeout(saveTimer);
-  setSaveState('saving', 'Saving…');
+  setSaveState('saving', 'Saving locally…');
   saveTimer = setTimeout(() => {
     try {
-      const payload = {
-        title: state.title,
-        subtitle: state.subtitle,
-        pageSizeId: state.pageSizeId,
-        orientation: state.orientation,
-        showLogo: state.showLogo,
-        showCopyright: state.showCopyright,
-        pages: state.pages,
-      };
+      const payload = serialiseState();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-      setSaveState('saved', 'Saved');
+      setSaveState('saved', authState.user ? 'Saved locally (☁ optional)' : 'Saved locally');
     } catch (e) {
       console.error('save failed', e);
       setSaveState('error', 'Save error');
@@ -1110,10 +1417,26 @@ function persist() {
   }, 350);
 }
 
+function serialiseState() {
+  return {
+    title: state.title,
+    subtitle: state.subtitle,
+    pageSizeId: state.pageSizeId,
+    orientation: state.orientation,
+    showLogo: state.showLogo,
+    showCopyright: state.showCopyright,
+    pages: state.pages,
+    cloudDocId: state.cloudDocId,
+    cloudDocTitle: state.cloudDocTitle,
+  };
+}
+
 function setSaveState(kind, label) {
   const el = document.getElementById('saveState');
   if (!el) return;
-  el.classList.toggle('saving', kind === 'saving');
+  el.classList.remove('saving', 'error');
+  if (kind === 'saving') el.classList.add('saving');
+  if (kind === 'error')  el.classList.add('error');
   document.getElementById('saveStateText').textContent = label;
 }
 
@@ -1131,6 +1454,8 @@ function loadFromStorage() {
       showLogo: parsed.showLogo !== false,
       showCopyright: parsed.showCopyright !== false,
       pages: Array.isArray(parsed.pages) && parsed.pages.length ? parsed.pages.map(upgradePage) : [makeEmptyPage()],
+      cloudDocId: parsed.cloudDocId || null,
+      cloudDocTitle: parsed.cloudDocTitle || null,
     });
     return true;
   } catch (e) { console.warn('load failed', e); return false; }
@@ -1142,8 +1467,9 @@ function upgradePage(p) {
     tiles: Array.isArray(p.tiles) ? p.tiles.map(upgradeTile) : [],
   };
 }
+
 function upgradeTile(t) {
-  return {
+  const tile = {
     id: t.id || newId(),
     x: clamp(t.x, 0, 9999),
     y: clamp(t.y, 0, 9999),
@@ -1151,17 +1477,43 @@ function upgradeTile(t) {
     h: clamp(t.h, 20, 999),
     color: TILE_COLOURS.includes(t.color) ? t.color : TILE_COLOURS[0],
     html: typeof t.html === 'string' ? t.html : '',
-    image: normalizeTileImage(t.image),
+    image: normalizeTileImage(t.image, t.w, t.h),
     fontStep: clamp(t.fontStep, 1, 7),
   };
+  return tile;
 }
-function normalizeTileImage(im) {
-  if (!im || typeof im !== 'object') return { dataUrl: '', placement: 'below', scale: 0.85 };
-  return {
-    dataUrl: typeof im.dataUrl === 'string' ? im.dataUrl : '',
-    placement: im.placement === 'above' ? 'above' : 'below',
-    scale: clamp(im.scale, 0.10, 1.0) || 0.85,
-  };
+
+/* Normalize image data. Supports BOTH the new model (x,y,w,h in mm) AND the
+   old { placement, scale } model — auto-upgrading the latter to a sensible
+   default position inside the tile. */
+function normalizeTileImage(im, tileW, tileH) {
+  if (!im || typeof im !== 'object') {
+    return { dataUrl: '', x: 0, y: 0, w: 0, h: 0 };
+  }
+  const dataUrl = typeof im.dataUrl === 'string' ? im.dataUrl : '';
+  if (!dataUrl) {
+    return { dataUrl: '', x: 0, y: 0, w: 0, h: 0 };
+  }
+  // New-style: x,y,w,h all numbers
+  if (Number.isFinite(+im.x) && Number.isFinite(+im.y) &&
+      Number.isFinite(+im.w) && Number.isFinite(+im.h) && +im.w > 0 && +im.h > 0) {
+    return {
+      dataUrl,
+      x: +im.x, y: +im.y,
+      w: clamp(+im.w, 5, 500),
+      h: clamp(+im.h, 5, 500),
+    };
+  }
+  // Old-style: { placement, scale } → place image centred horizontally
+  // at top or bottom of tile, fill ~ scale fraction of body width.
+  const bodyW = Math.max(20, (tileW || 70) - 4);
+  const bodyH = Math.max(20, (tileH || 50) - 6 - 4); // minus header strip
+  const scale = clamp(im.scale, 0.10, 1.0) || 0.85;
+  const imW = bodyW * scale;
+  const imH = imW * 0.6; // unknown aspect → guess
+  const imX = (bodyW - imW) / 2;
+  const imY = (im.placement === 'above') ? 1 : Math.max(1, bodyH - imH - 1);
+  return { dataUrl, x: imX, y: imY, w: imW, h: imH };
 }
 
 function makeEmptyPage() {
@@ -1170,16 +1522,12 @@ function makeEmptyPage() {
 
 /* =========================================================================
    TILE FACTORY
-   -------------------------------------------------------------------------
-   Default tile placement: a sensible cascade from the top-left safe margin,
-   stepping ~6 mm per existing tile so new tiles aren't stacked exactly on
-   top of each other.
    ========================================================================= */
 function defaultTilePosition(pageIdx) {
   const page = state.pages[pageIdx];
   const n = page.tiles.length;
   const startX = PAGE_MARGIN_MM;
-  const startY = PAGE_MARGIN_MM + 20; // below the header
+  const startY = PAGE_MARGIN_MM + 20;
   return {
     x: clamp(startX + (n * 6), PAGE_MARGIN_MM, sheetSizeMm().w - 60),
     y: clamp(startY + (n * 6), PAGE_MARGIN_MM + 20, sheetSizeMm().h - 50),
@@ -1194,7 +1542,7 @@ function makeTile(pageIdx) {
     w: 70, h: 50,
     color: TILE_COLOURS[0],
     html: '',
-    image: { dataUrl: '', placement: 'below', scale: 0.85 },
+    image: { dataUrl: '', x: 0, y: 0, w: 0, h: 0 },
     fontStep: 3,
   };
 }
@@ -1209,22 +1557,17 @@ function sheetSizeMm() {
     : { w: def.w, h: def.h };
 }
 
-/* Convert mm ↔ px using the sheet element's actual rendered pixel width.
-   The sheet has its width set to e.g. 210mm via CSS, so its bounding rect
-   gives us a true px-per-mm at the current screen DPI. */
 function sheetPxPerMm(sheetEl) {
-  if (!sheetEl) return 3.78; // 96dpi default
+  if (!sheetEl) return 3.78;
   const r = sheetEl.getBoundingClientRect();
   const mm = sheetSizeMm().w;
   return mm ? (r.width / mm) : 3.78;
 }
 
-/* Find the sheet element a tile lives on (or its current page). */
 function getSheetEl(pageIdx) {
   return document.querySelector(`.sheet[data-page-idx="${pageIdx}"]`);
 }
 
-/* Locate which page a given tile belongs to. Returns { pageIdx, tile }. */
 function findTile(tileId) {
   for (let i = 0; i < state.pages.length; i++) {
     const t = state.pages[i].tiles.find(x => x.id === tileId);
@@ -1242,6 +1585,7 @@ function renderAll() {
   renderHeader();
   renderSheets();
   renderInspector();
+  renderCloudDocPill();
   applyPagePrintRule();
   fitSheetToViewport();
 }
@@ -1254,6 +1598,17 @@ function renderHeader() {
   document.getElementById('showLogoChk').checked = !!state.showLogo;
   document.getElementById('showCopyChk').checked = !!state.showCopyright;
   document.getElementById('deletePageBtn').disabled = state.pages.length <= 1;
+}
+
+function renderCloudDocPill() {
+  const pill = document.getElementById('docPill');
+  const text = document.getElementById('docPillText');
+  if (state.cloudDocId && state.cloudDocTitle) {
+    pill.style.display = 'inline-flex';
+    text.textContent = state.cloudDocTitle;
+  } else {
+    pill.style.display = 'none';
+  }
 }
 
 function renderSheets() {
@@ -1269,12 +1624,10 @@ function renderSheets() {
     sheet.style.setProperty('--sheet-margin', PAGE_MARGIN_MM + 'mm');
     sheet.style.setProperty('--sheet-logo-h', '10mm');
 
-    // Safe-zone outline
     const safe = document.createElement('div');
     safe.className = 'sheet-safe-zone';
     sheet.appendChild(safe);
 
-    // Sheet header
     if (pageIdx === 0 && (state.title || state.subtitle)) {
       const header = document.createElement('div');
       header.className = 'sheet-header';
@@ -1293,7 +1646,6 @@ function renderSheets() {
       header.appendChild(div);
       sheet.appendChild(header);
     } else if (state.pages.length > 1) {
-      // Show a small page indicator on subsequent pages
       const pageNum = document.createElement('div');
       pageNum.className = 'sheet-header';
       const t = document.createElement('div');
@@ -1303,7 +1655,6 @@ function renderSheets() {
       sheet.appendChild(pageNum);
     }
 
-    // Empty-state nudge when a page has no tiles
     if (page.tiles.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'empty-state-overlay';
@@ -1314,10 +1665,8 @@ function renderSheets() {
       sheet.appendChild(empty);
     }
 
-    // Tiles
     page.tiles.forEach(tile => sheet.appendChild(renderTile(tile, pageIdx)));
 
-    // Footer logo / copyright
     if (state.showCopyright) {
       const notice = document.createElement('div');
       notice.className = 'sheet-footer-notice';
@@ -1332,7 +1681,7 @@ function renderSheets() {
       sheet.appendChild(logo);
     }
 
-    // Snap guides container — invisible elements positioned by JS while dragging
+    // Pool of snap guides (sheet-level, for tile dragging)
     for (let i = 0; i < 6; i++) {
       const g = document.createElement('div');
       g.className = 'snap-guide';
@@ -1352,17 +1701,16 @@ function renderTile(tile, pageIdx) {
   const el = document.createElement('div');
   el.className = 'tile';
   el.dataset.tileId = tile.id;
+  el.dataset.pageIdx = String(pageIdx);
   if (state.selectedTileId === tile.id) el.classList.add('selected');
   el.style.left = tile.x + 'mm';
   el.style.top = tile.y + 'mm';
   el.style.width = tile.w + 'mm';
   el.style.height = tile.h + 'mm';
   el.style.setProperty('--tile-bg', tile.color);
-  // Darker border for non-white tiles
-  const borderColor = (tile.color === '#FFFFFF') ? '#DDD' : tile.color.replace(/^#/, '#');
   el.style.setProperty('--tile-border', tile.color === '#FFFFFF' ? '#D5D5D0' : darkenColour(tile.color, 0.12));
 
-  // Header strip (drag handle)
+  // Header strip
   const header = document.createElement('div');
   header.className = 'tile-header';
   header.innerHTML = `
@@ -1376,8 +1724,6 @@ function renderTile(tile, pageIdx) {
   // Body
   const body = document.createElement('div');
   body.className = 'tile-body';
-  body.dataset.placement = tile.image.placement;
-  // Font size from step (1..7) → em
   body.style.setProperty('--tile-font', stepToEm(tile.fontStep || 3) + 'rem');
 
   // Text
@@ -1389,37 +1735,43 @@ function renderTile(tile, pageIdx) {
   text.innerHTML = tile.html || '';
   body.appendChild(text);
 
-  // Image (if any)
-  if (tile.image.dataUrl) {
+  // Image (absolutely positioned in mm within body)
+  if (tile.image && tile.image.dataUrl) {
     const wrap = document.createElement('div');
     wrap.className = 'tile-image-wrap';
     wrap.dataset.tileId = tile.id;
-    wrap.style.width = Math.round(tile.image.scale * 100) + '%';
     if (state.selectedImageTileId === tile.id) wrap.classList.add('image-selected');
+    wrap.style.left = tile.image.x + 'mm';
+    wrap.style.top = tile.image.y + 'mm';
+    wrap.style.width = tile.image.w + 'mm';
+    wrap.style.height = tile.image.h + 'mm';
     const img = document.createElement('img');
     img.src = tile.image.dataUrl;
     img.alt = '';
     img.draggable = false;
     wrap.appendChild(img);
-    // Click shield: clicking the image selects it (inside the tile).
-    const shield = document.createElement('div');
-    shield.className = 'tile-image-shield';
-    shield.dataset.tileId = tile.id;
-    wrap.appendChild(shield);
-    // 8 handles for the image
     ['nw','n','ne','e','se','s','sw','w'].forEach(dir => {
       const h = document.createElement('div');
       h.className = 'tile-image-handle ' + dir;
       h.dataset.handle = dir;
       h.dataset.tileId = tile.id;
+      h.dataset.kind = 'image-handle';
       wrap.appendChild(h);
     });
     body.appendChild(wrap);
+
+    // Image-level snap guide pool (inside body so they snap to body coords)
+    for (let i = 0; i < 6; i++) {
+      const g = document.createElement('div');
+      g.className = 'img-snap-guide';
+      g.dataset.guide = String(i);
+      body.appendChild(g);
+    }
   }
 
   el.appendChild(body);
 
-  // 8 tile resize handles (visible only when selected)
+  // Tile resize handles
   ['nw','n','ne','e','se','s','sw','w'].forEach(dir => {
     const h = document.createElement('div');
     h.className = 'tile-handle ' + dir;
@@ -1431,15 +1783,11 @@ function renderTile(tile, pageIdx) {
   return el;
 }
 
-/* Step 1..7 → font-size in rem. Same scale we use in the flashcard app
-   so it feels familiar; 3 is "normal" (1rem). */
 function stepToEm(step) {
   const map = { 1: 0.62, 2: 0.78, 3: 0.95, 4: 1.12, 5: 1.32, 6: 1.6, 7: 1.9 };
   return map[clamp(step, 1, 7)] || 0.95;
 }
 
-/* Quick colour-darken for tile border. Takes a hex like "#FFF3E0" and a
-   factor like 0.12, returns "rgba(r,g,b,1)" with each channel scaled. */
 function darkenColour(hex, factor) {
   const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   if (!m) return '#D5D5D0';
@@ -1449,37 +1797,25 @@ function darkenColour(hex, factor) {
   return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
 }
 
-/* Scale the entire sheet preview down so it fits the viewport while
-   preserving its true mm dimensions for printing. */
 function fitSheetToViewport() {
   const size = sheetSizeMm();
-  // Available horizontal space in the workspace
   const workspace = document.querySelector('.workspace');
   if (!workspace) return;
   const available = workspace.getBoundingClientRect().width - 32;
-  // Convert mm to px at 96 DPI (CSS spec). 1mm ≈ 3.7795px.
   const mmToPx = 3.7795275591;
   const desired = size.w * mmToPx;
   let scale = desired ? Math.min(1, available / desired) : 1;
-  // Don't scale below 0.35 — better to scroll than to make text unreadable
   scale = Math.max(0.35, scale);
   sheetWrap.style.transform = `scale(${scale})`;
-  // Compensate for the visual gap created by scaling
   const scaledHeightLoss = size.h * mmToPx * (1 - scale) * state.pages.length;
   sheetWrap.style.marginBottom = `-${scaledHeightLoss}px`;
-  // Stash the current preview scale so drag/drop can convert mouse-px → mm.
   sheetWrap.dataset.scale = String(scale);
 }
 
-/* The reverse of fitSheetToViewport's scale — used to translate mouse
-   deltas in viewport pixels into mm on the actual sheet. */
 function previewScale() {
   return parseFloat(sheetWrap.dataset.scale || '1') || 1;
 }
 
-/* =========================================================================
-   PRINT @PAGE RULE
-   ========================================================================= */
 function applyPagePrintRule() {
   const size = sheetSizeMm();
   const el = document.getElementById('pagePrintRule');
@@ -1491,7 +1827,6 @@ function applyPagePrintRule() {
    ========================================================================= */
 function addTile(pageIdx) {
   if (pageIdx == null) {
-    // Default: the page the selected tile lives on, or the first page.
     if (state.selectedTileId) {
       const f = findTile(state.selectedTileId);
       if (f) pageIdx = f.pageIdx;
@@ -1504,7 +1839,6 @@ function addTile(pageIdx) {
   state.selectedImageTileId = null;
   persist();
   renderAll();
-  // Focus its text immediately for typing
   setTimeout(() => {
     const el = document.querySelector(`.tile-text[data-tile-id="${tile.id}"]`);
     if (el) el.focus();
@@ -1527,7 +1861,6 @@ function duplicateTile(tileId) {
   if (!found) return;
   const copy = JSON.parse(JSON.stringify(found.tile));
   copy.id = newId();
-  // Nudge a little so it's visible
   copy.x = clamp(copy.x + 6, PAGE_MARGIN_MM, sheetSizeMm().w - copy.w - PAGE_MARGIN_MM);
   copy.y = clamp(copy.y + 6, PAGE_MARGIN_MM, sheetSizeMm().h - copy.h - PAGE_MARGIN_MM);
   state.pages[found.pageIdx].tiles.push(copy);
@@ -1556,18 +1889,21 @@ function updateTile(tileId, patch) {
 }
 
 /* =========================================================================
-   DRAG / RESIZE
+   DRAG / RESIZE STATE MACHINE
    -------------------------------------------------------------------------
-   Single state machine handling four gestures:
-     1. tile-move    — drag the header strip or empty tile body
-     2. tile-resize  — drag a corner/edge handle of the tile
-     3. image-move   — drag the image inside a tile
-     4. image-resize — drag a corner/edge handle of the image inside a tile
-   Modifiers while resizing:
+   Gestures:
+     1. tile-move    — drag the tile header strip
+     2. tile-resize  — drag a tile corner/edge handle
+     3. image-move   — drag the image inside a tile (the image wrap itself)
+     4. image-resize — drag an image corner/edge handle
+
+   Modifiers during resize:
      Shift → keep aspect ratio (proportional)
-     Alt   → resize from centre (opposite side moves equally)
-   While dragging tiles, snap guides appear when the moving tile's centre
-   or edges align with the sheet centre, quarter lines, or other tiles.
+     Alt   → resize from centre (opposite side mirrors)
+
+   Snap targets:
+     • tile-move/resize: against sheet centre/quarter/edges + other tiles
+     • image-move/resize: against the TILE BODY's centre/quarters/edges
    ========================================================================= */
 const SNAP_PX = 5;
 let activeDrag = null;
@@ -1588,12 +1924,11 @@ function startDrag(e, kind, tileId, handle) {
     sheetEl, pxPerMm, scale,
     startMouseX: e.clientX,
     startMouseY: e.clientY,
-    startTile: { ...f.tile, image: { ...f.tile.image } },
+    startTile: JSON.parse(JSON.stringify(f.tile)),
   };
   document.body.style.userSelect = 'none';
   window.addEventListener('mousemove', onDragMove);
   window.addEventListener('mouseup', onDragEnd);
-  // Add a "moving" visual class
   const el = document.querySelector(`.tile[data-tile-id="${tileId}"]`);
   if (el) {
     el.classList.add(kind.includes('move') ? 'dragging' : 'resizing');
@@ -1603,7 +1938,6 @@ function startDrag(e, kind, tileId, handle) {
 function onDragMove(e) {
   const d = activeDrag;
   if (!d) return;
-  // Convert viewport-px → mm on the sheet, accounting for the preview scale.
   const dxPx = e.clientX - d.startMouseX;
   const dyPx = e.clientY - d.startMouseY;
   const dxMm = dxPx / (d.pxPerMm * d.scale);
@@ -1617,21 +1951,20 @@ function onDragMove(e) {
   const start = d.startTile;
   const sheet = sheetSizeMm();
 
-  // Reset all snap guides on this sheet
+  // Clear sheet-level guides
   d.sheetEl.querySelectorAll('.snap-guide').forEach(g => g.classList.remove('active'));
 
   if (d.kind === 'tile-move') {
     let nx = start.x + dxMm;
     let ny = start.y + dyMm;
-    // Constrain to sheet bounds (allow some slack at the edges)
     nx = clamp(nx, 0, sheet.w - 5);
     ny = clamp(ny, 0, sheet.h - 5);
-    // Snap horizontal and vertical
     const snapped = applyTileSnap(d.pageIdx, d.tileId, nx, ny, start.w, start.h);
     nx = snapped.x; ny = snapped.y;
     tile.x = round1(nx);
     tile.y = round1(ny);
     drawDragReadout(d.sheetEl, e, `${Math.round(tile.x)}, ${Math.round(tile.y)} mm`);
+
   } else if (d.kind === 'tile-resize') {
     let left = start.x, top = start.y;
     let right = start.x + start.w, bottom = start.y + start.h;
@@ -1650,7 +1983,6 @@ function onDragMove(e) {
     let w = right - left, h = bottom - top;
     const aspect = start.w / Math.max(1, start.h);
     if (shift) {
-      // Keep proportions — match whichever axis grew more
       const isCorner = dir.length === 2;
       let useW;
       if (isCorner) useW = (Math.abs(w - start.w) > Math.abs(h - start.h));
@@ -1671,39 +2003,83 @@ function onDragMove(e) {
     tile.y = round1(clamp(top, -50, sheet.h + 50));
     tile.w = round1(Math.max(MIN, right - left));
     tile.h = round1(Math.max(MIN, bottom - top));
-    drawDragReadout(d.sheetEl, e, `${Math.round(tile.w)} × ${Math.round(tile.h)} mm` + (shift ? ' · proportional' : '') + (alt ? ' · from centre' : ''));
+
+    // After tile resize, clamp the image bounds so it doesn't fall outside
+    // the new tile body.
+    clampImageToBody(tile);
+
+    drawDragReadout(d.sheetEl, e,
+      `${Math.round(tile.w)} × ${Math.round(tile.h)} mm`
+      + (shift ? ' · proportional' : '')
+      + (alt ? ' · from centre' : ''));
+
   } else if (d.kind === 'image-move') {
-    // Image inside the tile is centred via flexbox. There's no offset model
-    // (we keep it simple — pasted images sit centred). "Moving" the image
-    // toggles its placement (above/below text) if dragged past the text.
-    // For now, we just allow toggling on a meaningful upward / downward drag.
-    if (dyMm < -8 && tile.image.placement !== 'above') {
-      tile.image.placement = 'above';
-    } else if (dyMm > 8 && tile.image.placement !== 'below') {
-      tile.image.placement = 'below';
-    }
-    drawDragReadout(d.sheetEl, e, 'placement: ' + tile.image.placement);
+    // Drag the image inside the tile body. The image position is in mm
+    // relative to the body. Use the tile-body dimensions for snapping.
+    const body = bodyDimsMm(tile);
+    const im = tile.image;
+    let nx = start.image.x + dxMm;
+    let ny = start.image.y + dyMm;
+    // Keep image fully inside body
+    nx = clamp(nx, -im.w * 0.15, body.w - im.w * 0.85);
+    ny = clamp(ny, -im.h * 0.15, body.h - im.h * 0.85);
+    const snapped = applyImageSnap(d.tileId, d.pageIdx, nx, ny, im.w, im.h, body);
+    nx = snapped.x; ny = snapped.y;
+    im.x = round1(nx);
+    im.y = round1(ny);
+    drawDragReadout(d.sheetEl, e, `image: ${Math.round(im.x)}, ${Math.round(im.y)} mm`);
+
   } else if (d.kind === 'image-resize') {
-    // The image width is a fraction (0..1) of the tile body width.
-    // Compute the body's width in mm, then turn the new image width into
-    // a scale.
-    const bodyEl = document.querySelector(`.tile[data-tile-id="${d.tileId}"] .tile-body`);
-    if (!bodyEl) return;
-    const bodyWidthMm = bodyEl.getBoundingClientRect().width / (d.pxPerMm * d.scale);
-    let widthMm = bodyWidthMm * start.image.scale;
+    // Resize the image. Image is always proportional by default (locked
+    // aspect ratio); hold Shift to break the lock.
+    const body = bodyDimsMm(tile);
+    const im = tile.image;
+    const startIm = start.image;
+    let left = startIm.x, top = startIm.y;
+    let right = startIm.x + startIm.w, bottom = startIm.y + startIm.h;
     const dir = d.handle;
-    // Use horizontal change for left/right handles, vertical → keep
-    // proportional (images are intrinsically aspect-locked).
-    let delta = 0;
-    if (dir.includes('e')) delta = dxMm;
-    else if (dir.includes('w')) delta = -dxMm;
-    else delta = dyMm; // top/bottom handles still change height visually
-    widthMm = clamp(widthMm + delta, bodyWidthMm * 0.1, bodyWidthMm);
-    tile.image.scale = clamp(widthMm / bodyWidthMm, 0.10, 1.0);
-    drawDragReadout(d.sheetEl, e, Math.round(tile.image.scale * 100) + '% of tile width' + (shift ? ' · proportional (default for images)' : ''));
+    if (dir.includes('w')) left   = startIm.x + dxMm;
+    if (dir.includes('e')) right  = startIm.x + startIm.w + dxMm;
+    if (dir.includes('n')) top    = startIm.y + dyMm;
+    if (dir.includes('s')) bottom = startIm.y + startIm.h + dyMm;
+    const MIN = 6;
+    if (right - left < MIN) {
+      if (dir.includes('w')) left = right - MIN; else right = left + MIN;
+    }
+    if (bottom - top < MIN) {
+      if (dir.includes('n')) top = bottom - MIN; else bottom = top + MIN;
+    }
+    let w = right - left, h = bottom - top;
+    const aspect = startIm.w / Math.max(1, startIm.h);
+    // Default: keep aspect ratio. Hold Shift to free-resize.
+    if (!shift) {
+      const isCorner = dir.length === 2;
+      let useW;
+      if (isCorner) useW = (Math.abs(w - startIm.w) > Math.abs(h - startIm.h));
+      else useW = (dir === 'e' || dir === 'w');
+      if (useW) h = w / aspect; else w = h * aspect;
+      if (!alt) {
+        if (dir.includes('w')) left = right - w; else right = left + w;
+        if (dir.includes('n')) top = bottom - h; else bottom = top + h;
+      }
+    }
+    if (alt) {
+      const cx = startIm.x + startIm.w / 2;
+      const cy = startIm.y + startIm.h / 2;
+      left = cx - w / 2; right = cx + w / 2;
+      top = cy - h / 2; bottom = cy + h / 2;
+    }
+    im.x = round1(left);
+    im.y = round1(top);
+    im.w = round1(Math.max(MIN, right - left));
+    im.h = round1(Math.max(MIN, bottom - top));
+
+    drawDragReadout(d.sheetEl, e,
+      `image: ${Math.round(im.w)} × ${Math.round(im.h)} mm`
+      + (shift ? ' · free' : ' · proportional')
+      + (alt ? ' · from centre' : ''));
   }
 
-  // Live-update the DOM without a full re-render
   liveUpdateTileEl(tile);
 }
 
@@ -1714,20 +2090,55 @@ function onDragEnd() {
   window.removeEventListener('mousemove', onDragMove);
   window.removeEventListener('mouseup', onDragEnd);
   d.sheetEl.querySelectorAll('.snap-guide').forEach(g => g.classList.remove('active'));
+  // Image-level guides live inside the tile body
+  const el = document.querySelector(`.tile[data-tile-id="${d.tileId}"]`);
+  if (el) {
+    el.querySelectorAll('.img-snap-guide').forEach(g => g.classList.remove('active'));
+    el.classList.remove('dragging', 'resizing');
+  }
   const ro = d.sheetEl.querySelector('.drag-readout');
   if (ro) ro.classList.remove('active');
-  const el = document.querySelector(`.tile[data-tile-id="${d.tileId}"]`);
-  if (el) el.classList.remove('dragging', 'resizing');
   persist();
   activeDrag = null;
-  // Refresh the inspector readouts for the geometry that just changed
   renderInspector();
 }
 
-function round1(n) { return Math.round(n * 10) / 10; }
+/* Tile body dimensions in mm (after header strip + padding). The body has
+   8px-vert/10px-horiz padding ≈ 2.1mm / 2.6mm; the header is 18px ≈ 4.8mm.
+   We use approximations here because the body is rendered with these
+   constants and we want image coords to be inside the body's content box. */
+function bodyDimsMm(tile) {
+  const HEADER_MM = 18 / 3.7795;       // ~4.76mm
+  const PAD_H_MM = 10 / 3.7795 * 2;    // padding-left + padding-right ≈ 5.3mm
+  const PAD_V_MM = 8 / 3.7795 * 2;     // padding-top + padding-bottom ≈ 4.2mm
+  return {
+    w: Math.max(1, tile.w - PAD_H_MM),
+    h: Math.max(1, tile.h - HEADER_MM - PAD_V_MM),
+  };
+}
 
-/* Live-update the DOM for one tile without a full re-render — used while
-   dragging so the cursor stays glued to the moving / resizing tile. */
+/* Keep the image inside the tile body after the tile is resized. */
+function clampImageToBody(tile) {
+  if (!tile.image || !tile.image.dataUrl) return;
+  const body = bodyDimsMm(tile);
+  const im = tile.image;
+  // Scale down if image is now bigger than body
+  if (im.w > body.w) {
+    const ratio = body.w / im.w;
+    im.w = body.w;
+    im.h = im.h * ratio;
+  }
+  if (im.h > body.h) {
+    const ratio = body.h / im.h;
+    im.h = body.h;
+    im.w = im.w * ratio;
+  }
+  // Push back into body if outside
+  im.x = clamp(im.x, 0, Math.max(0, body.w - im.w));
+  im.y = clamp(im.y, 0, Math.max(0, body.h - im.h));
+}
+
+/* Live-update DOM without full re-render. */
 function liveUpdateTileEl(tile) {
   const el = document.querySelector(`.tile[data-tile-id="${tile.id}"]`);
   if (!el) return;
@@ -1735,18 +2146,18 @@ function liveUpdateTileEl(tile) {
   el.style.top = tile.y + 'mm';
   el.style.width = tile.w + 'mm';
   el.style.height = tile.h + 'mm';
-  const body = el.querySelector('.tile-body');
-  if (body) body.dataset.placement = tile.image.placement;
   const wrap = el.querySelector('.tile-image-wrap');
-  if (wrap) wrap.style.width = Math.round(tile.image.scale * 100) + '%';
+  if (wrap && tile.image && tile.image.dataUrl) {
+    wrap.style.left = tile.image.x + 'mm';
+    wrap.style.top = tile.image.y + 'mm';
+    wrap.style.width = tile.image.w + 'mm';
+    wrap.style.height = tile.image.h + 'mm';
+  }
 }
 
-/* Snap a moving tile's coordinates to:
-     • the sheet's vertical and horizontal centre lines
-     • the quarter lines (25%, 75%)
-     • the safe-zone edges
-     • any other tile's edges or centre
-   Within SNAP_PX (translated to mm) we snap and show the matching guide. */
+/* =========================================================================
+   TILE-LEVEL SNAPPING (used while dragging tiles around the sheet)
+   ========================================================================= */
 function applyTileSnap(pageIdx, movingTileId, nx, ny, w, h) {
   const sheet = sheetSizeMm();
   const sheetEl = getSheetEl(pageIdx);
@@ -1768,7 +2179,6 @@ function applyTileSnap(pageIdx, movingTileId, nx, ny, w, h) {
     { v: sheet.h * 0.25, kind: 'quarter' },
     { v: sheet.h * 0.75, kind: 'quarter' },
   ];
-  // Other tiles' edges + centres
   state.pages[pageIdx].tiles.forEach(t => {
     if (t.id === movingTileId) return;
     candidatesX.push({ v: t.x, kind: 'tile' });
@@ -1779,7 +2189,6 @@ function applyTileSnap(pageIdx, movingTileId, nx, ny, w, h) {
     candidatesY.push({ v: t.y + t.h / 2, kind: 'tile' });
   });
 
-  // What "lines" can the moving tile align? its left, centre, and right.
   const myXs = [
     { mine: 'left',   v: nx },
     { mine: 'center', v: nx + w / 2 },
@@ -1791,7 +2200,6 @@ function applyTileSnap(pageIdx, movingTileId, nx, ny, w, h) {
     { mine: 'bottom', v: ny + h },
   ];
 
-  // Find the smallest snap distance for X
   let bestX = null;
   for (const target of candidatesX) {
     for (const mine of myXs) {
@@ -1824,10 +2232,105 @@ function applyTileSnap(pageIdx, movingTileId, nx, ny, w, h) {
 let nextGuideIdx = 0;
 function showSnapGuide(sheetEl, orientation, valueMm, isCenter) {
   const guides = sheetEl.querySelectorAll('.snap-guide');
-  // Round-robin through the pool so multiple guides can show simultaneously.
   const g = guides[nextGuideIdx % guides.length];
   nextGuideIdx++;
   g.className = 'snap-guide ' + orientation + (isCenter ? ' center' : '') + ' active';
+  if (orientation === 'v') {
+    g.style.left = valueMm + 'mm';
+    g.style.top = '0';
+    g.style.height = '100%';
+    g.style.width = '1px';
+  } else {
+    g.style.top = valueMm + 'mm';
+    g.style.left = '0';
+    g.style.width = '100%';
+    g.style.height = '1px';
+  }
+}
+
+/* =========================================================================
+   IMAGE-LEVEL SNAPPING (used while dragging image inside a tile body)
+   -------------------------------------------------------------------------
+   Snaps the moving image's left/centre/right and top/middle/bottom against
+   the tile body's centre lines, quarter lines (25%, 75%) and edges.
+   Guides are drawn INSIDE the tile body so they only affect the relevant
+   tile.
+   ========================================================================= */
+let nextImgGuideIdx = 0;
+function applyImageSnap(tileId, pageIdx, nx, ny, w, h, body) {
+  const sheetEl = getSheetEl(pageIdx);
+  const pxPerMm = sheetPxPerMm(sheetEl);
+  const scale = previewScale();
+  const snapMm = SNAP_PX / (pxPerMm * scale);
+
+  const tileEl = document.querySelector(`.tile[data-tile-id="${tileId}"]`);
+  if (tileEl) {
+    tileEl.querySelectorAll('.img-snap-guide').forEach(g => g.classList.remove('active'));
+  }
+
+  const candidatesX = [
+    { v: body.w / 2, kind: 'center' },
+    { v: 0,          kind: 'edge'   },
+    { v: body.w,     kind: 'edge'   },
+    { v: body.w * 0.25, kind: 'quarter' },
+    { v: body.w * 0.75, kind: 'quarter' },
+  ];
+  const candidatesY = [
+    { v: body.h / 2, kind: 'center' },
+    { v: 0,          kind: 'edge'   },
+    { v: body.h,     kind: 'edge'   },
+    { v: body.h * 0.25, kind: 'quarter' },
+    { v: body.h * 0.75, kind: 'quarter' },
+  ];
+
+  const myXs = [
+    { mine: 'left',   v: nx },
+    { mine: 'center', v: nx + w / 2 },
+    { mine: 'right',  v: nx + w },
+  ];
+  const myYs = [
+    { mine: 'top',    v: ny },
+    { mine: 'center', v: ny + h / 2 },
+    { mine: 'bottom', v: ny + h },
+  ];
+
+  let bestX = null;
+  for (const target of candidatesX) {
+    for (const mine of myXs) {
+      const diff = target.v - mine.v;
+      if (Math.abs(diff) < snapMm && (!bestX || Math.abs(diff) < Math.abs(bestX.diff))) {
+        bestX = { diff, target, mine };
+      }
+    }
+  }
+  let bestY = null;
+  for (const target of candidatesY) {
+    for (const mine of myYs) {
+      const diff = target.v - mine.v;
+      if (Math.abs(diff) < snapMm && (!bestY || Math.abs(diff) < Math.abs(bestY.diff))) {
+        bestY = { diff, target, mine };
+      }
+    }
+  }
+  if (bestX) {
+    nx += bestX.diff;
+    showImgSnapGuide(tileId, 'v', bestX.target.v, bestX.target.kind === 'center');
+  }
+  if (bestY) {
+    ny += bestY.diff;
+    showImgSnapGuide(tileId, 'h', bestY.target.v, bestY.target.kind === 'center');
+  }
+  return { x: nx, y: ny };
+}
+
+function showImgSnapGuide(tileId, orientation, valueMm, isCenter) {
+  const tileEl = document.querySelector(`.tile[data-tile-id="${tileId}"]`);
+  if (!tileEl) return;
+  const guides = tileEl.querySelectorAll('.img-snap-guide');
+  if (!guides.length) return;
+  const g = guides[nextImgGuideIdx % guides.length];
+  nextImgGuideIdx++;
+  g.className = 'img-snap-guide ' + orientation + (isCenter ? ' center' : '') + ' active';
   if (orientation === 'v') {
     g.style.left = valueMm + 'mm';
     g.style.top = '0';
@@ -1852,7 +2355,7 @@ function drawDragReadout(sheetEl, e, text) {
 }
 
 /* =========================================================================
-   INSPECTOR  (floating panel for the selected tile)
+   INSPECTOR
    ========================================================================= */
 function renderInspector() {
   const insp = document.getElementById('inspector');
@@ -1863,7 +2366,6 @@ function renderInspector() {
   }
   insp.classList.add('open');
 
-  // Colour grid
   const grid = document.getElementById('colourGrid');
   grid.innerHTML = '';
   TILE_COLOURS.forEach(c => {
@@ -1879,36 +2381,33 @@ function renderInspector() {
     grid.appendChild(chip);
   });
 
-  // Image zone
   const zone = document.getElementById('imageZone');
-  const placeRow = document.getElementById('imagePlacementRow');
   const sizeRow = document.getElementById('imageSizeRow');
-  const removeBtn = document.getElementById('removeImageBtn');
+  const actionsRow = document.getElementById('imageActionsRow');
   zone.innerHTML = '';
-  if (tile.tile.image.dataUrl) {
+  zone.classList.remove('has-image');
+  if (tile.tile.image && tile.tile.image.dataUrl) {
     const img = document.createElement('img');
     img.src = tile.tile.image.dataUrl;
     img.alt = '';
     zone.appendChild(img);
-    placeRow.style.display = 'flex';
+    zone.classList.add('has-image');
     sizeRow.style.display = 'grid';
-    removeBtn.style.display = 'inline-flex';
-    // Highlight current placement button
-    placeRow.querySelectorAll('[data-place]').forEach(b => {
-      b.classList.toggle('active', b.dataset.place === tile.tile.image.placement);
-    });
+    actionsRow.style.display = 'flex';
+
+    // Image scale slider — based on current width as % of body width
+    const body = bodyDimsMm(tile.tile);
     const slider = document.getElementById('imageScaleSlider');
     const read = document.getElementById('imageScaleRead');
-    slider.value = Math.round(tile.tile.image.scale * 100);
-    read.textContent = slider.value + '%';
+    const percent = clamp(Math.round((tile.tile.image.w / body.w) * 100), 15, 100);
+    slider.value = String(percent);
+    read.textContent = percent + '%';
   } else {
     zone.textContent = '📷 Click here, then paste a picture (Ctrl+V / ⌘+V) — or drop one';
-    placeRow.style.display = 'none';
     sizeRow.style.display = 'none';
-    removeBtn.style.display = 'none';
+    actionsRow.style.display = 'none';
   }
 
-  // Geometry sliders
   const sheet = sheetSizeMm();
   const wSlider = document.getElementById('tileWidthSlider');
   const wRead = document.getElementById('tileWidthRead');
@@ -1923,13 +2422,7 @@ function renderInspector() {
 }
 
 /* =========================================================================
-   RICH TEXT TOOLBAR
-   -------------------------------------------------------------------------
-   execCommand is deprecated but every browser still implements it for
-   contenteditable, and it round-trips through innerHTML cleanly. We use
-   it for the basic Bold / Italic / Underline / font / colour / list
-   commands. The A+ / A- buttons step through 7 size levels AND lift the
-   chosen size onto any <li> in the selection so bullets/numbers scale.
+   RICH TEXT TOOLBAR (unchanged from previous build)
    ========================================================================= */
 let lastFocusedText = null;
 function getActiveTileTextEl() {
@@ -1948,7 +2441,6 @@ function rtExec(cmd, value) {
     document.execCommand('styleWithCSS', false, false);
     document.execCommand(cmd, false, value);
   } catch (_) {}
-  // Sync HTML back to model
   syncTileTextFromDom(el);
 }
 
@@ -1965,7 +2457,6 @@ function bumpTextSize(delta) {
   const tileId = el.dataset.tileId;
   const f = findTile(tileId);
   if (!f) return;
-  // Find selection — if collapsed inside this editable, select all
   const sel = window.getSelection();
   let lisInSelection = [];
   let hasSelection = false;
@@ -1984,9 +2475,6 @@ function bumpTextSize(delta) {
     sel.addRange(range);
     lisInSelection = Array.from(el.querySelectorAll('li'));
   }
-
-  // Bump per-tile step. If the selection is "everything in the tile", we
-  // also persist the new step on the tile so the body's --tile-font scales.
   const newStep = clamp((f.tile.fontStep || 3) + delta, 1, 7);
   const STEP_TO_EM = { 1: 0.66, 2: 0.82, 3: 1.0, 4: 1.18, 5: 1.4, 6: 1.7, 7: 2.0 };
   const targetEm = STEP_TO_EM[newStep];
@@ -1994,10 +2482,7 @@ function bumpTextSize(delta) {
     document.execCommand('styleWithCSS', false, false);
     document.execCommand('fontSize', false, String(newStep));
   } catch (_) {}
-  // Lift the chosen size onto every <li> so bullet/number markers scale too.
   lisInSelection.forEach(li => { li.style.fontSize = targetEm + 'em'; });
-  // If the selection covered everything in a list, push the size onto the
-  // parent <ul>/<ol> too so new items inherit it.
   const lists = new Set();
   lisInSelection.forEach(li => {
     const p = li.parentElement;
@@ -2009,25 +2494,37 @@ function bumpTextSize(delta) {
     items.forEach(li => { if (!lisInSelection.includes(li)) allCovered = false; });
     if (allCovered) list.style.fontSize = targetEm + 'em';
   });
-
-  // Persist the new fontStep on the tile model and sync HTML.
   updateTile(tileId, { fontStep: newStep, html: el.innerHTML });
-  // Quick visual feedback so the user knows the level changed
   toast('Text size: ' + (['', 'tiny', 'small', 'normal', 'big', 'bigger', 'huge', 'giant'][newStep]));
 }
 
 /* =========================================================================
    IMAGE HANDLING
    ========================================================================= */
-function attachImageToTile(tileId, dataUrl) {
+function attachImageToTile(tileId, dataUrl, naturalWidth, naturalHeight) {
   const f = findTile(tileId);
   if (!f) return;
-  const existing = f.tile.image.dataUrl;
+  const existing = f.tile.image && f.tile.image.dataUrl;
   if (existing && !confirm('Replace the existing picture in this tile?')) return;
+  // Compute initial size: ~70% of body width, preserving aspect ratio.
+  const body = bodyDimsMm(f.tile);
+  const aspect = (naturalWidth && naturalHeight) ? (naturalWidth / naturalHeight) : 1.4;
+  let w = Math.min(body.w * 0.7, body.w - 2);
+  let h = w / aspect;
+  // If the resulting image is taller than the body, scale down
+  if (h > body.h - 2) {
+    h = body.h - 2;
+    w = h * aspect;
+  }
+  // Centre it
+  const x = (body.w - w) / 2;
+  const y = (body.h - h) / 2;
   f.tile.image = {
     dataUrl,
-    placement: f.tile.image.placement || 'below',
-    scale: f.tile.image.scale || 0.85,
+    x: round1(x),
+    y: round1(y),
+    w: round1(w),
+    h: round1(h),
   };
   persist();
   renderAll();
@@ -2040,19 +2537,428 @@ function handleImageFile(tileId, file) {
     return;
   }
   const reader = new FileReader();
-  reader.onload = () => attachImageToTile(tileId, reader.result);
+  reader.onload = () => {
+    // Get natural dimensions for aspect ratio
+    const probe = new Image();
+    probe.onload = () => {
+      attachImageToTile(tileId, reader.result, probe.naturalWidth, probe.naturalHeight);
+    };
+    probe.onerror = () => attachImageToTile(tileId, reader.result, 0, 0);
+    probe.src = reader.result;
+  };
   reader.onerror = () => toast('Could not read the picture', 'error');
   reader.readAsDataURL(file);
+}
+
+/* =========================================================================
+   FIREBASE AUTH
+   ========================================================================= */
+const authState = {
+  user: null,
+  isAdmin: false,
+};
+
+function setupAuth() {
+  const pill = document.getElementById('authPill');
+  pill.addEventListener('click', () => {
+    if (authState.user) {
+      // Already signed in — show menu (here: simple sign-out confirm)
+      if (confirm(`Sign out of ${authState.user.email}?`)) {
+        auth.signOut();
+      }
+    } else {
+      doSignIn();
+    }
+  });
+  auth.onAuthStateChanged(user => {
+    authState.user = user;
+    authState.isAdmin = !!(user && user.email && user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+    renderAuthPill();
+    refreshCloudButtons();
+    // Clear/refresh the library list if it's open
+    const libModal = document.getElementById('libraryModal');
+    if (libModal.classList.contains('open') && authState.isAdmin) {
+      refreshLibraryList();
+    }
+    setSaveState(authState.user ? 'saved' : 'saved',
+                 authState.user ? 'Saved locally (☁ optional)' : 'Saved locally');
+  });
+}
+
+function doSignIn() {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  auth.signInWithPopup(provider).then(result => {
+    const user = result.user;
+    if (user.email && user.email.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+      toast(`Signed in as ${user.email}, but only ${ADMIN_EMAIL} can use the cloud library`, 'info');
+    } else {
+      toast(`Welcome back, ${user.displayName || user.email}!`, 'success');
+    }
+  }).catch(err => {
+    console.error('Sign-in failed:', err);
+    if (err.code === 'auth/popup-closed-by-user') return;
+    toast('Sign-in failed: ' + (err.message || err.code || err), 'error');
+  });
+}
+
+function renderAuthPill() {
+  const pill = document.getElementById('authPill');
+  const text = document.getElementById('authPillText');
+  // Clear any existing avatar / status
+  pill.querySelectorAll('.auth-avatar, .auth-email, .auth-status').forEach(n => n.remove());
+  // Clear the google icon if signed in
+  const googleIcon = pill.querySelector('.google-icon');
+  if (authState.user) {
+    if (googleIcon) googleIcon.style.display = 'none';
+    if (authState.user.photoURL) {
+      const avatar = document.createElement('img');
+      avatar.className = 'auth-avatar';
+      avatar.src = authState.user.photoURL;
+      avatar.alt = '';
+      pill.insertBefore(avatar, text);
+    }
+    text.textContent = '';
+    const emailSpan = document.createElement('span');
+    emailSpan.className = 'auth-email';
+    emailSpan.textContent = authState.user.email || authState.user.displayName || 'Signed in';
+    pill.insertBefore(emailSpan, text);
+    const status = document.createElement('span');
+    status.className = 'auth-status ' + (authState.isAdmin ? 'admin' : 'viewer');
+    status.textContent = authState.isAdmin ? 'ADMIN' : 'VIEWER';
+    pill.appendChild(status);
+    pill.title = `Signed in as ${authState.user.email}. Click to sign out.`;
+  } else {
+    if (googleIcon) googleIcon.style.display = '';
+    text.textContent = 'Sign in';
+    pill.title = 'Sign in with Google to save cheatsheets to the cloud library';
+  }
+}
+
+function refreshCloudButtons() {
+  const ids = ['openLibraryBtn', 'newCloudBtn', 'saveCloudBtn'];
+  ids.forEach(id => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.disabled = !authState.isAdmin;
+    if (!authState.user) {
+      btn.title = 'Sign in to use the cloud library';
+    } else if (!authState.isAdmin) {
+      btn.title = `Only ${ADMIN_EMAIL} can use the cloud library`;
+    } else {
+      // Restore default titles
+      btn.title = ({
+        'openLibraryBtn': 'Open your saved cheatsheets',
+        'newCloudBtn':    'Start a fresh cheatsheet (resets the editor)',
+        'saveCloudBtn':   'Save the current cheatsheet to the cloud',
+      })[id];
+    }
+  });
+}
+
+/* =========================================================================
+   CHEATSHEET LIBRARY  (Firestore)
+   ========================================================================= */
+function openLibrary() {
+  if (!authState.isAdmin) {
+    toast('Only ' + ADMIN_EMAIL + ' can use the cloud library', 'error');
+    return;
+  }
+  document.getElementById('libraryModal').classList.add('open');
+  document.getElementById('librarySearch').value = '';
+  refreshLibraryList();
+}
+
+function closeLibrary() {
+  document.getElementById('libraryModal').classList.remove('open');
+}
+
+let _libraryCache = []; // last fetched list
+
+function refreshLibraryList() {
+  const listEl = document.getElementById('libraryList');
+  const emptyEl = document.getElementById('libraryEmpty');
+  listEl.innerHTML = '';
+  emptyEl.style.display = '';
+  emptyEl.innerHTML = `<div class="lib-empty-icon">⏳</div><div>Loading cheatsheets…</div>`;
+  if (!authState.isAdmin) {
+    emptyEl.innerHTML = `<div class="lib-empty-icon">🔒</div><div>Sign in as ${ADMIN_EMAIL} to view the library.</div>`;
+    return;
+  }
+  db.collection(COLLECTION_PATH)
+    .orderBy('updatedAt', 'desc')
+    .limit(200)
+    .get()
+    .then(snap => {
+      _libraryCache = [];
+      snap.forEach(doc => _libraryCache.push({ id: doc.id, ...doc.data() }));
+      renderLibraryList(_libraryCache);
+    })
+    .catch(err => {
+      console.error('library fetch failed', err);
+      emptyEl.innerHTML = `<div class="lib-empty-icon">⚠️</div><div>Could not load library:<br><small>${escapeHtml(err.message || err)}</small></div>`;
+      toast('Failed to load library: ' + (err.message || err), 'error');
+    });
+}
+
+function renderLibraryList(items) {
+  const listEl = document.getElementById('libraryList');
+  const emptyEl = document.getElementById('libraryEmpty');
+  listEl.innerHTML = '';
+  if (!items.length) {
+    emptyEl.style.display = '';
+    emptyEl.innerHTML = `
+      <div class="lib-empty-icon">📚</div>
+      <div>No cheatsheets yet.</div>
+      <div style="font-size:0.85rem;margin-top:8px;color:var(--text-faint);">
+        Build something on the page, then click <b>💾 Save</b> in the Library group.
+      </div>`;
+    return;
+  }
+  emptyEl.style.display = 'none';
+  items.forEach(doc => {
+    const row = document.createElement('div');
+    row.className = 'lib-item';
+    if (state.cloudDocId === doc.id) row.classList.add('current');
+    const updated = doc.updatedAt && doc.updatedAt.toDate ? doc.updatedAt.toDate() : null;
+    const tileCount = (doc.state && Array.isArray(doc.state.pages))
+      ? doc.state.pages.reduce((s, p) => s + (p.tiles ? p.tiles.length : 0), 0)
+      : 0;
+    const pageCount = (doc.state && Array.isArray(doc.state.pages)) ? doc.state.pages.length : 0;
+    row.innerHTML = `
+      <div>
+        <div class="lib-title-row">${escapeHtml(doc.title || '(untitled)')}</div>
+        <div class="lib-meta">
+          ${doc.subtitle ? `<i>${escapeHtml(doc.subtitle)}</i> · ` : ''}
+          <b>${pageCount}</b> page${pageCount === 1 ? '' : 's'} ·
+          <b>${tileCount}</b> tile${tileCount === 1 ? '' : 's'}
+          ${updated ? ` · updated ${formatRelative(updated)}` : ''}
+        </div>
+      </div>
+      <div class="lib-actions">
+        <button class="btn btn-sm btn-primary" data-act="open" data-id="${doc.id}">📂 Open</button>
+        <button class="btn btn-sm" data-act="dup" data-id="${doc.id}" title="Duplicate (save as new)">⎘</button>
+        <button class="btn btn-sm btn-danger" data-act="del" data-id="${doc.id}" title="Delete">🗑</button>
+      </div>`;
+    listEl.appendChild(row);
+  });
+}
+
+function formatRelative(date) {
+  const now = new Date();
+  const seconds = Math.floor((now - date) / 1000);
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+  if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+  if (seconds < 86400 * 7) return Math.floor(seconds / 86400) + 'd ago';
+  return date.toLocaleDateString();
+}
+
+function loadCheatsheet(docId) {
+  if (!authState.isAdmin) return;
+  db.collection(COLLECTION_PATH).doc(docId).get().then(snap => {
+    if (!snap.exists) {
+      toast('Cheatsheet not found', 'error');
+      return;
+    }
+    const data = snap.data();
+    if (!data.state || !Array.isArray(data.state.pages)) {
+      toast('Cheatsheet data is corrupted', 'error');
+      return;
+    }
+    if (hasUnsavedWork()) {
+      if (!confirm('Replace the current cheatsheet with the one from the library? Any local changes will be discarded.')) {
+        return;
+      }
+    }
+    state.title = data.state.title || data.title || 'Untitled';
+    state.subtitle = data.state.subtitle || data.subtitle || '';
+    state.pageSizeId = PAGE_SIZES[data.state.pageSizeId] ? data.state.pageSizeId : 'a4';
+    state.orientation = data.state.orientation === 'landscape' ? 'landscape' : 'portrait';
+    state.showLogo = data.state.showLogo !== false;
+    state.showCopyright = data.state.showCopyright !== false;
+    state.pages = data.state.pages.map(upgradePage);
+    state.selectedTileId = null;
+    state.selectedImageTileId = null;
+    state.cloudDocId = docId;
+    state.cloudDocTitle = data.title || state.title;
+    state.cloudDocLoaded = true;
+    persist();
+    renderAll();
+    closeLibrary();
+    toast(`Loaded "${state.cloudDocTitle}"`, 'success');
+  }).catch(err => {
+    console.error('load failed', err);
+    toast('Failed to load: ' + (err.message || err), 'error');
+  });
+}
+
+function deleteCheatsheet(docId) {
+  if (!authState.isAdmin) return;
+  const cached = _libraryCache.find(d => d.id === docId);
+  const name = cached ? (cached.title || '(untitled)') : 'this cheatsheet';
+  if (!confirm(`Permanently delete "${name}" from the cloud library? This cannot be undone.`)) return;
+  db.collection(COLLECTION_PATH).doc(docId).delete().then(() => {
+    toast('Deleted', 'success');
+    if (state.cloudDocId === docId) {
+      state.cloudDocId = null;
+      state.cloudDocTitle = null;
+      state.cloudDocLoaded = false;
+      persist();
+      renderCloudDocPill();
+    }
+    refreshLibraryList();
+  }).catch(err => {
+    console.error('delete failed', err);
+    toast('Failed to delete: ' + (err.message || err), 'error');
+  });
+}
+
+function duplicateCheatsheet(docId) {
+  if (!authState.isAdmin) return;
+  db.collection(COLLECTION_PATH).doc(docId).get().then(snap => {
+    if (!snap.exists) return;
+    const data = snap.data();
+    const newTitle = (data.title || 'Untitled') + ' (copy)';
+    const payload = {
+      ownerUid: authState.user.uid,
+      ownerEmail: authState.user.email,
+      title: newTitle,
+      subtitle: data.subtitle || '',
+      notes: data.notes || '',
+      state: data.state,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    };
+    return db.collection(COLLECTION_PATH).add(payload).then(() => {
+      toast('Duplicated as "' + newTitle + '"', 'success');
+      refreshLibraryList();
+    });
+  }).catch(err => {
+    console.error('duplicate failed', err);
+    toast('Failed to duplicate: ' + (err.message || err), 'error');
+  });
+}
+
+function hasUnsavedWork() {
+  // Heuristic: if there are tiles, treat as having work.
+  return state.pages.some(p => p.tiles.length > 0);
+}
+
+/* Save the current cheatsheet to the cloud.
+   - If `cloudDocId` exists, update it in place.
+   - Otherwise, open the Save-As modal to give it a name. */
+function saveCloud(forceSaveAs) {
+  if (!authState.isAdmin) {
+    toast('Only ' + ADMIN_EMAIL + ' can save to the cloud library', 'error');
+    return;
+  }
+  if (!state.cloudDocId || forceSaveAs) {
+    openSaveAsModal();
+    return;
+  }
+  doSaveCloudUpdate(state.cloudDocId, state.cloudDocTitle, '');
+}
+
+function openSaveAsModal() {
+  const modal = document.getElementById('saveAsModal');
+  const nameInput = document.getElementById('saveAsName');
+  const notesInput = document.getElementById('saveAsNotes');
+  nameInput.value = state.cloudDocTitle || state.title || 'Untitled cheatsheet';
+  notesInput.value = '';
+  modal.classList.add('open');
+  setTimeout(() => nameInput.focus(), 50);
+}
+function closeSaveAsModal() {
+  document.getElementById('saveAsModal').classList.remove('open');
+}
+
+function doSaveCloudCreate(title, notes) {
+  setSaveState('saving', 'Saving to cloud…');
+  const payload = {
+    ownerUid: authState.user.uid,
+    ownerEmail: authState.user.email,
+    title: title || 'Untitled cheatsheet',
+    subtitle: state.subtitle || '',
+    notes: notes || '',
+    state: {
+      title: state.title,
+      subtitle: state.subtitle,
+      pageSizeId: state.pageSizeId,
+      orientation: state.orientation,
+      showLogo: state.showLogo,
+      showCopyright: state.showCopyright,
+      pages: state.pages,
+    },
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  };
+  db.collection(COLLECTION_PATH).add(payload).then(ref => {
+    state.cloudDocId = ref.id;
+    state.cloudDocTitle = payload.title;
+    state.cloudDocLoaded = true;
+    persist();
+    renderCloudDocPill();
+    setSaveState('saved', '☁ Saved to cloud');
+    toast(`Saved to cloud as "${payload.title}"`, 'success');
+  }).catch(err => {
+    console.error('cloud save failed', err);
+    setSaveState('error', 'Cloud save failed');
+    toast('Cloud save failed: ' + (err.message || err), 'error');
+  });
+}
+
+function doSaveCloudUpdate(docId, title, notes) {
+  setSaveState('saving', 'Saving to cloud…');
+  const payload = {
+    title: title || state.cloudDocTitle || state.title || 'Untitled',
+    subtitle: state.subtitle || '',
+    state: {
+      title: state.title,
+      subtitle: state.subtitle,
+      pageSizeId: state.pageSizeId,
+      orientation: state.orientation,
+      showLogo: state.showLogo,
+      showCopyright: state.showCopyright,
+      pages: state.pages,
+    },
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  };
+  if (notes) payload.notes = notes;
+  db.collection(COLLECTION_PATH).doc(docId).set(payload, { merge: true }).then(() => {
+    state.cloudDocTitle = payload.title;
+    persist();
+    renderCloudDocPill();
+    setSaveState('saved', '☁ Saved to cloud');
+    toast('Saved to cloud', 'success');
+  }).catch(err => {
+    console.error('cloud save failed', err);
+    setSaveState('error', 'Cloud save failed');
+    toast('Cloud save failed: ' + (err.message || err), 'error');
+  });
+}
+
+function newCloudCheatsheet() {
+  if (hasUnsavedWork() && !confirm('Start a fresh cheatsheet? Any unsaved local changes will be lost.')) return;
+  state.title = 'My Cheatsheet';
+  state.subtitle = '';
+  state.pages = [makeEmptyPage()];
+  state.selectedTileId = null;
+  state.selectedImageTileId = null;
+  state.cloudDocId = null;
+  state.cloudDocTitle = null;
+  state.cloudDocLoaded = false;
+  persist();
+  renderAll();
+  toast('New cheatsheet started', 'info');
 }
 
 /* =========================================================================
    WIRING
    ========================================================================= */
 function wireGlobal() {
-  // Title + subtitle
   document.getElementById('sheetTitle').addEventListener('input', (e) => {
     state.title = e.target.value;
-    // Update just the header text without rebuilding the whole sheet
     const titleEl = document.querySelector('.sheet-header-title');
     if (titleEl) titleEl.textContent = state.title;
     persist();
@@ -2063,7 +2969,6 @@ function wireGlobal() {
     if (subEl) subEl.textContent = state.subtitle;
     persist();
   });
-  // Page size + orientation
   document.getElementById('pageSizeSelect').addEventListener('change', (e) => {
     state.pageSizeId = e.target.value;
     persist();
@@ -2074,7 +2979,6 @@ function wireGlobal() {
     persist();
     renderAll();
   });
-  // Footer toggles
   document.getElementById('showLogoChk').addEventListener('change', (e) => {
     state.showLogo = e.target.checked;
     persist();
@@ -2085,7 +2989,6 @@ function wireGlobal() {
     persist();
     renderAll();
   });
-  // Add tile / add page / delete page
   document.getElementById('addTileBtn').addEventListener('click', () => addTile());
   document.getElementById('addPageBtn').addEventListener('click', () => {
     state.pages.push(makeEmptyPage());
@@ -2099,47 +3002,98 @@ function wireGlobal() {
     persist();
     renderAll();
   });
-  // Print
   document.getElementById('printBtn').addEventListener('click', () => {
     applyPagePrintRule();
-    setTimeout(() => window.print(), 80);
+    // Deselect so handles don't show in the print
+    state.selectedTileId = null;
+    state.selectedImageTileId = null;
+    renderAll();
+    setTimeout(() => window.print(), 120);
   });
-  // Clear all
   document.getElementById('clearAllBtn').addEventListener('click', () => {
     if (!confirm('Clear the whole cheatsheet? This cannot be undone.')) return;
     state.pages = [makeEmptyPage()];
     state.selectedTileId = null;
     state.selectedImageTileId = null;
+    state.cloudDocId = null;
+    state.cloudDocTitle = null;
     persist();
     renderAll();
     toast('Cheatsheet cleared');
   });
+  // Library
+  document.getElementById('openLibraryBtn').addEventListener('click', openLibrary);
+  document.getElementById('newCloudBtn').addEventListener('click', newCloudCheatsheet);
+  document.getElementById('saveCloudBtn').addEventListener('click', () => saveCloud(false));
+  document.getElementById('libraryNewBtn').addEventListener('click', () => {
+    closeLibrary();
+    newCloudCheatsheet();
+  });
+  document.getElementById('libraryRefreshBtn').addEventListener('click', refreshLibraryList);
+  document.getElementById('librarySearch').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    if (!q) { renderLibraryList(_libraryCache); return; }
+    const filtered = _libraryCache.filter(d => {
+      return (d.title && d.title.toLowerCase().includes(q)) ||
+             (d.subtitle && d.subtitle.toLowerCase().includes(q)) ||
+             (d.notes && d.notes.toLowerCase().includes(q));
+    });
+    renderLibraryList(filtered);
+  });
+  document.getElementById('libraryList').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const id = btn.dataset.id;
+    const act = btn.dataset.act;
+    if (act === 'open') loadCheatsheet(id);
+    else if (act === 'del') deleteCheatsheet(id);
+    else if (act === 'dup') duplicateCheatsheet(id);
+  });
+  // Save-as modal
+  document.getElementById('saveAsConfirmBtn').addEventListener('click', () => {
+    const name = document.getElementById('saveAsName').value.trim();
+    const notes = document.getElementById('saveAsNotes').value.trim();
+    if (!name) { toast('Please give the cheatsheet a name', 'error'); return; }
+    closeSaveAsModal();
+    doSaveCloudCreate(name, notes);
+  });
+  document.querySelectorAll('[data-close-library]').forEach(el => {
+    el.addEventListener('click', closeLibrary);
+  });
+  document.querySelectorAll('[data-close-saveas]').forEach(el => {
+    el.addEventListener('click', closeSaveAsModal);
+  });
+  // Click backdrop to close
+  document.getElementById('libraryModal').addEventListener('click', (e) => {
+    if (e.target.id === 'libraryModal') closeLibrary();
+  });
+  document.getElementById('saveAsModal').addEventListener('click', (e) => {
+    if (e.target.id === 'saveAsModal') closeSaveAsModal();
+  });
+
   // Export / import JSON
   document.getElementById('exportJsonBtn').addEventListener('click', exportJson);
   document.getElementById('importJsonBtn').addEventListener('click', () =>
     document.getElementById('importJsonInput').click());
   document.getElementById('importJsonInput').addEventListener('change', importJson);
 
-  // Window resize → re-fit
   window.addEventListener('resize', () => fitSheetToViewport());
 
-  // Click anywhere outside a tile or inspector → deselect
   document.addEventListener('mousedown', (e) => {
     if (e.target.closest('.tile')) return;
     if (e.target.closest('.inspector')) return;
     if (e.target.closest('.tile-handle')) return;
+    if (e.target.closest('.modal')) return;
     state.selectedTileId = null;
     state.selectedImageTileId = null;
     renderInspector();
-    // Just refresh selection highlight without rebuilding all DOM
     document.querySelectorAll('.tile.selected').forEach(el => el.classList.remove('selected'));
     document.querySelectorAll('.tile-image-wrap.image-selected').forEach(el => el.classList.remove('image-selected'));
   });
 
-  // Global mousedown to start drag/resize where needed (delegated)
   document.addEventListener('mousedown', onSheetMouseDown);
 
-  // Inspector close
+  // Inspector
   document.getElementById('inspectorClose').addEventListener('click', () => {
     state.selectedTileId = null;
     renderAll();
@@ -2150,12 +3104,14 @@ function wireGlobal() {
   document.getElementById('duplicateTileBtn').addEventListener('click', () => {
     if (state.selectedTileId) duplicateTile(state.selectedTileId);
   });
+
   // Geometry sliders
   document.getElementById('tileWidthSlider').addEventListener('input', (e) => {
     if (!state.selectedTileId) return;
     const tile = findTile(state.selectedTileId).tile;
     tile.w = +e.target.value;
     document.getElementById('tileWidthRead').textContent = tile.w + ' mm';
+    clampImageToBody(tile);
     liveUpdateTileEl(tile);
   });
   document.getElementById('tileWidthSlider').addEventListener('change', persist);
@@ -2164,36 +3120,67 @@ function wireGlobal() {
     const tile = findTile(state.selectedTileId).tile;
     tile.h = +e.target.value;
     document.getElementById('tileHeightRead').textContent = tile.h + ' mm';
+    clampImageToBody(tile);
     liveUpdateTileEl(tile);
   });
   document.getElementById('tileHeightSlider').addEventListener('change', persist);
 
-  // Image placement buttons
-  document.querySelectorAll('#imagePlacementRow [data-place]').forEach(b => {
-    b.addEventListener('click', () => {
-      if (!state.selectedTileId) return;
-      const tile = findTile(state.selectedTileId).tile;
-      tile.image.placement = b.dataset.place;
-      persist();
-      renderAll();
-    });
-  });
-  // Image scale slider
+  // Image scale slider — scales the image around its current centre
   const imgScale = document.getElementById('imageScaleSlider');
   imgScale.addEventListener('input', () => {
     if (!state.selectedTileId) return;
     const tile = findTile(state.selectedTileId).tile;
-    tile.image.scale = +imgScale.value / 100;
+    if (!tile.image || !tile.image.dataUrl) return;
+    const body = bodyDimsMm(tile);
+    const targetW = Math.max(6, body.w * (+imgScale.value / 100));
+    const aspect = tile.image.w / Math.max(1, tile.image.h);
+    const newH = targetW / aspect;
+    // Resize about centre
+    const cx = tile.image.x + tile.image.w / 2;
+    const cy = tile.image.y + tile.image.h / 2;
+    tile.image.w = round1(targetW);
+    tile.image.h = round1(newH);
+    tile.image.x = round1(cx - tile.image.w / 2);
+    tile.image.y = round1(cy - tile.image.h / 2);
     document.getElementById('imageScaleRead').textContent = imgScale.value + '%';
-    const wrap = document.querySelector(`.tile[data-tile-id="${tile.id}"] .tile-image-wrap`);
-    if (wrap) wrap.style.width = imgScale.value + '%';
+    liveUpdateTileEl(tile);
   });
   imgScale.addEventListener('change', persist);
+
+  document.getElementById('centerImageBtn').addEventListener('click', () => {
+    if (!state.selectedTileId) return;
+    const tile = findTile(state.selectedTileId).tile;
+    if (!tile.image || !tile.image.dataUrl) return;
+    const body = bodyDimsMm(tile);
+    tile.image.x = round1((body.w - tile.image.w) / 2);
+    tile.image.y = round1((body.h - tile.image.h) / 2);
+    persist();
+    renderAll();
+  });
+  document.getElementById('fitImageBtn').addEventListener('click', () => {
+    if (!state.selectedTileId) return;
+    const tile = findTile(state.selectedTileId).tile;
+    if (!tile.image || !tile.image.dataUrl) return;
+    const body = bodyDimsMm(tile);
+    const aspect = tile.image.w / Math.max(1, tile.image.h);
+    tile.image.w = round1(body.w - 1);
+    tile.image.h = round1(tile.image.w / aspect);
+    // If too tall, cap at body height
+    if (tile.image.h > body.h - 1) {
+      tile.image.h = round1(body.h - 1);
+      tile.image.w = round1(tile.image.h * aspect);
+    }
+    tile.image.x = round1((body.w - tile.image.w) / 2);
+    tile.image.y = round1((body.h - tile.image.h) / 2);
+    persist();
+    renderAll();
+  });
   document.getElementById('removeImageBtn').addEventListener('click', () => {
     if (!state.selectedTileId) return;
     if (!confirm('Remove the picture from this tile?')) return;
     const tile = findTile(state.selectedTileId).tile;
-    tile.image = { dataUrl: '', placement: 'below', scale: 0.85 };
+    tile.image = { dataUrl: '', x: 0, y: 0, w: 0, h: 0 };
+    state.selectedImageTileId = null;
     persist();
     renderAll();
   });
@@ -2222,7 +3209,6 @@ function wireGlobal() {
     const file = e.dataTransfer.files && e.dataTransfer.files[0];
     if (file) handleImageFile(state.selectedTileId, file);
   });
-  // Double-click to open a file picker
   zone.addEventListener('dblclick', () => {
     if (!state.selectedTileId) return;
     const input = document.getElementById('hiddenImageInput');
@@ -2238,7 +3224,7 @@ function wireGlobal() {
 
   // Rich-text toolbar
   document.querySelectorAll('.rt-btn[data-cmd]').forEach(b => {
-    b.addEventListener('mousedown', (e) => e.preventDefault()); // keep editor focus
+    b.addEventListener('mousedown', (e) => e.preventDefault());
     b.addEventListener('click', () => rtExec(b.dataset.cmd));
   });
   document.querySelectorAll('.rt-btn[data-action]').forEach(b => {
@@ -2255,7 +3241,6 @@ function wireGlobal() {
   document.querySelectorAll('.rt-color[data-cmd]').forEach(inp => {
     inp.addEventListener('input', () => {
       const cmd = inp.dataset.cmd;
-      // Browsers differ on highlight command name; try both.
       if (cmd === 'hiliteColor') {
         const ok = document.execCommand('hiliteColor', false, inp.value);
         if (!ok) rtExec('backColor', inp.value);
@@ -2266,17 +3251,13 @@ function wireGlobal() {
     });
   });
 
-  // Listen for paste at the document level so pasting a screenshot
-  // anywhere routes into the selected tile.
+  // Paste an image anywhere → goes into selected tile
   document.addEventListener('paste', (e) => {
     if (!state.selectedTileId) return;
-    // If the target is inside a tile-text, let it paste text/HTML normally.
-    const t = e.target;
     const items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
     for (const it of items) {
       if (it.type && it.type.startsWith('image/')) {
-        // Always route image paste into the selected tile's image slot.
         e.preventDefault();
         handleImageFile(state.selectedTileId, it.getAsFile());
         return;
@@ -2284,7 +3265,7 @@ function wireGlobal() {
     }
   });
 
-  // Keyboard: arrows nudge selected tile / image; Delete removes tile; Esc deselects
+  // Keyboard nudges
   document.addEventListener('keydown', (e) => {
     const t = e.target;
     if (t && (t.matches('input, textarea, select') || t.isContentEditable)) return;
@@ -2292,17 +3273,29 @@ function wireGlobal() {
     const tile = findTile(state.selectedTileId).tile;
     const step = e.shiftKey ? 5 : 1;
     let handled = false;
-    if (e.key === 'ArrowLeft')  { tile.x -= step; handled = true; }
-    if (e.key === 'ArrowRight') { tile.x += step; handled = true; }
-    if (e.key === 'ArrowUp')    { tile.y -= step; handled = true; }
-    if (e.key === 'ArrowDown')  { tile.y += step; handled = true; }
-    if (e.key === 'Delete' || e.key === 'Backspace') {
-      deleteTile(state.selectedTileId);
-      handled = true;
-    }
-    if (e.key === 'Escape') {
-      state.selectedTileId = null; state.selectedImageTileId = null;
-      renderAll(); handled = true;
+    // If an image is selected, nudge the image instead of the tile
+    if (state.selectedImageTileId === state.selectedTileId && tile.image && tile.image.dataUrl) {
+      const im = tile.image;
+      if (e.key === 'ArrowLeft')  { im.x -= step; handled = true; }
+      if (e.key === 'ArrowRight') { im.x += step; handled = true; }
+      if (e.key === 'ArrowUp')    { im.y -= step; handled = true; }
+      if (e.key === 'ArrowDown')  { im.y += step; handled = true; }
+      if (e.key === 'Escape') {
+        state.selectedImageTileId = null; renderAll(); handled = true;
+      }
+    } else {
+      if (e.key === 'ArrowLeft')  { tile.x -= step; handled = true; }
+      if (e.key === 'ArrowRight') { tile.x += step; handled = true; }
+      if (e.key === 'ArrowUp')    { tile.y -= step; handled = true; }
+      if (e.key === 'ArrowDown')  { tile.y += step; handled = true; }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        deleteTile(state.selectedTileId);
+        handled = true;
+      }
+      if (e.key === 'Escape') {
+        state.selectedTileId = null; state.selectedImageTileId = null;
+        renderAll(); handled = true;
+      }
     }
     if (handled) {
       e.preventDefault();
@@ -2311,7 +3304,7 @@ function wireGlobal() {
     }
   });
 
-  // Track focus on tile-text elements so toolbar knows which one to act on
+  // Track focus on tile-text
   document.addEventListener('focusin', (e) => {
     if (e.target.classList && e.target.classList.contains('tile-text')) {
       lastFocusedText = e.target;
@@ -2319,7 +3312,6 @@ function wireGlobal() {
       if (tileId && state.selectedTileId !== tileId) {
         state.selectedTileId = tileId;
         state.selectedImageTileId = null;
-        // Refresh just the selection highlight + inspector, no full re-render
         document.querySelectorAll('.tile.selected').forEach(el => el.classList.remove('selected'));
         const tileEl = document.querySelector(`.tile[data-tile-id="${tileId}"]`);
         if (tileEl) tileEl.classList.add('selected');
@@ -2328,14 +3320,13 @@ function wireGlobal() {
     }
   });
 
-  // tile-text inputs flow back to model
   document.addEventListener('input', (e) => {
     if (e.target.classList && e.target.classList.contains('tile-text')) {
       syncTileTextFromDom(e.target);
     }
   });
 
-  // Header strip mini buttons (delegated)
+  // Mini buttons on the tile header strip
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('.tile-mini-btn');
     if (!btn) return;
@@ -2348,23 +3339,27 @@ function wireGlobal() {
   });
 }
 
-/* Decide what gesture a mousedown on the workspace should start: tile-move
-   when the user grabs the header strip or empty body, tile-resize when
-   they grab a tile handle, image-move/resize when they're inside the image.
-   The text area itself swallows clicks (lets the user type). */
+/* Dispatch a mousedown on the workspace to start the right gesture. The
+   priority order matters because handles often sit on top of other
+   clickable areas:
+     1. Tile resize handle
+     2. Image resize handle
+     3. Image wrap (drag the image)
+     4. Tile header strip (drag the tile)
+     5. Plain click on tile body → select tile */
 function onSheetMouseDown(e) {
   if (e.button !== 0) return;
   if (e.target.closest('.inspector')) return;
+  if (e.target.closest('.modal')) return;
   if (e.target.closest('.tile-mini-btn')) return;
-  // Tile handle?
-  const handle = e.target.closest('.tile-handle');
-  if (handle) {
-    const tileId = handle.dataset.tileId;
+
+  const tileHandle = e.target.closest('.tile-handle');
+  if (tileHandle) {
+    const tileId = tileHandle.dataset.tileId;
     selectTile(tileId);
-    startDrag(e, 'tile-resize', tileId, handle.dataset.handle);
+    startDrag(e, 'tile-resize', tileId, tileHandle.dataset.handle);
     return;
   }
-  // Image handle?
   const imgHandle = e.target.closest('.tile-image-handle');
   if (imgHandle) {
     const tileId = imgHandle.dataset.tileId;
@@ -2372,15 +3367,13 @@ function onSheetMouseDown(e) {
     startDrag(e, 'image-resize', tileId, imgHandle.dataset.handle);
     return;
   }
-  // Image shield (drag image to toggle placement)
-  const shield = e.target.closest('.tile-image-shield');
-  if (shield) {
-    const tileId = shield.dataset.tileId;
+  const imgWrap = e.target.closest('.tile-image-wrap');
+  if (imgWrap) {
+    const tileId = imgWrap.dataset.tileId;
     selectImageInTile(tileId);
     startDrag(e, 'image-move', tileId, null);
     return;
   }
-  // Tile header (drag the tile)
   const tileHeader = e.target.closest('.tile-header');
   if (tileHeader) {
     const tileId = tileHeader.closest('.tile').dataset.tileId;
@@ -2388,25 +3381,21 @@ function onSheetMouseDown(e) {
     startDrag(e, 'tile-move', tileId, null);
     return;
   }
-  // Plain click on a tile body (not text) selects the tile
   const tileEl = e.target.closest('.tile');
   if (tileEl) {
     const tileId = tileEl.dataset.tileId;
-    // Don't take focus away from typing
     if (!e.target.closest('.tile-text')) {
       selectTile(tileId);
-    } else {
-      // Selecting via text focus is handled by focusin
     }
   }
 }
 
 /* =========================================================================
-   IMPORT / EXPORT
+   IMPORT / EXPORT JSON
    ========================================================================= */
 function exportJson() {
   const payload = {
-    polymathCheatsheetVersion: 1,
+    polymathCheatsheetVersion: 2,
     exportedAt: new Date().toISOString(),
     state: {
       title: state.title,
@@ -2439,7 +3428,7 @@ function importJson(e) {
       const parsed = JSON.parse(reader.result);
       const s = parsed.state || parsed;
       if (!s || !Array.isArray(s.pages)) throw new Error('Not a cheatsheet file');
-      if (state.pages.some(p => p.tiles.length > 0)) {
+      if (hasUnsavedWork()) {
         if (!confirm('Replace the current cheatsheet with the imported one?')) return;
       }
       state.title = s.title || 'Imported cheatsheet';
@@ -2450,6 +3439,9 @@ function importJson(e) {
       state.showCopyright = s.showCopyright !== false;
       state.pages = s.pages.map(upgradePage);
       state.selectedTileId = null;
+      state.cloudDocId = null;
+      state.cloudDocTitle = null;
+      state.cloudDocLoaded = false;
       persist();
       renderAll();
       toast('Cheatsheet imported', 'success');
@@ -2462,10 +3454,7 @@ function importJson(e) {
 }
 
 /* =========================================================================
-   STARTER TEMPLATE — runs only on first visit
-   -------------------------------------------------------------------------
-   Drops a handful of example tiles on page 1 so the user sees what the app
-   can do, instead of staring at a blank sheet.
+   STARTER TEMPLATE (only on the very first visit)
    ========================================================================= */
 function seedStarter() {
   state.title = 'P5 Fractions Cheatsheet';
@@ -2503,6 +3492,7 @@ function init() {
     persist();
   }
   wireGlobal();
+  setupAuth();
   renderAll();
 }
 document.addEventListener('DOMContentLoaded', init);
