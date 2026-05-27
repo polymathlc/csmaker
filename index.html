@@ -1,0 +1,2511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Polymath Cheatsheet Maker</title>
+
+<style>
+  /* =========================================================================
+     POLYMATH CHEATSHEET MAKER
+     -------------------------------------------------------------------------
+     Build a printable cheatsheet by laying out modular rectangle tiles on
+     an A4 / Letter / A3 page. Each tile holds rich text and (optionally) a
+     pasted image — drag tiles to reposition, drag corner/edge handles to
+     resize, paste pictures with Ctrl/⌘+V, change font size with A− / A+
+     (bullets and numbers scale with the text), pick a tile colour, etc.
+
+     This is a single, self-contained HTML file. Everything autosaves to
+     localStorage so a refresh keeps your work. Export → Print/PDF prints
+     the whole sheet at its native page size, with the Polymath logo and
+     copyright footer in the bottom-right of every page.
+
+     Architectural notes
+     -------------------
+     • One CHEATSHEET = { pageSize, orientation, title, subtitle, tiles[] }
+     • One TILE = { id, x, y, w, h, color, html (rich text), image (slot
+       with placement / scale / offsets) }
+     • Tile coords + dimensions are stored in mm so they're page-relative
+       and resolution-independent. A `mmToPx()` helper converts to screen
+       pixels using the page's actual pixel width.
+     • Paper is rendered as an inert "sheet" div sized via @page-style
+       width × height in mm. Tiles are absolutely positioned inside.
+     • Print mode uses an @page rule injected from JS so the printed PDF
+       picks up the chosen size + orientation exactly.
+     ========================================================================= */
+
+  :root {
+    /* Palette — Polymath general (soft orange accent for a "study notes" feel) */
+    --bg-page:        #FAFAFA;
+    --bg-card:        #FFFFFF;
+    --bg-soft:        #F7F7F5;
+    --bg-faint:       #F3F3F0;
+
+    --border-faint:   #ECECE8;
+    --border-soft:    #DDDDD8;
+    --border-medium:  #C2C2BC;
+
+    --text-dark:      #1A1A1A;
+    --text-medium:    #4A4A4A;
+    --text-soft:      #7A7A7A;
+    --text-faint:     #B0B0B0;
+
+    /* Soft warm orange accent for "cheatsheet" mood */
+    --accent-soft:    #FFE0B2;
+    --accent:         #FFB74D;
+    --accent-strong:  #FB8C00;
+    --accent-bg:      #FFF3E0;
+
+    --success:        #66BB6A;
+    --success-strong: #43A047;
+    --success-bg:     #F1F8E9;
+
+    --danger-soft:    #FFCDD2;
+    --danger:         #EF5350;
+    --danger-strong:  #C62828;
+    --danger-bg:      #FFEBEE;
+
+    /* Tile colour palette — pastel chips users pick from */
+    --tile-1: #FFFFFF;  /* white */
+    --tile-2: #FFF3E0;  /* warm cream */
+    --tile-3: #E3F2FD;  /* science blue */
+    --tile-4: #F1F8E9;  /* math mint */
+    --tile-5: #F3E5F5;  /* lavender */
+    --tile-6: #FFEBEE;  /* coral */
+    --tile-7: #FFF9C4;  /* sunny */
+    --tile-8: #E0F2F1;  /* teal */
+
+    /* Shadows */
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.05), 0 2px 8px rgba(0,0,0,0.06);
+    --shadow-2: 0 2px 4px rgba(0,0,0,0.06), 0 6px 18px rgba(0,0,0,0.09);
+    --shadow-3: 0 4px 8px rgba(0,0,0,0.07), 0 12px 32px rgba(0,0,0,0.12);
+
+    --space-2xs: 4px;
+    --space-xs:  8px;
+    --space-sm:  12px;
+    --space-md:  16px;
+    --space-lg:  24px;
+    --space-xl:  36px;
+
+    --radius-sm:   6px;
+    --radius-md:   10px;
+    --radius-lg:   16px;
+    --radius-xl:   22px;
+    --radius-pill: 999px;
+
+    --font-stack: 'RobotoQuestion', 'Century Gothic', CenturyGothic, AppleGothic, 'Trebuchet MS', sans-serif;
+    --font-stack-mono: ui-monospace, Menlo, monospace;
+
+    --transition-fast: 0.15s ease;
+    --transition: 0.25s ease;
+  }
+
+  /* Replace Century Gothic's question mark with Roboto's — house rule. */
+  @font-face {
+    font-family: 'RobotoQuestion';
+    font-style: normal; font-weight: 400;
+    src: url(https://fonts.gstatic.com/s/roboto/v32/KFOmCnqEu92Fr1Mu4mxKKTU1Kg.woff2) format('woff2');
+    unicode-range: U+003F;
+  }
+  @font-face {
+    font-family: 'RobotoQuestion';
+    font-style: normal; font-weight: 700;
+    src: url(https://fonts.gstatic.com/s/roboto/v32/KFOlCnqEu92Fr1MmWUlfBBc4.woff2) format('woff2');
+    unicode-range: U+003F;
+  }
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+  body {
+    font-family: var(--font-stack);
+    color: var(--text-dark);
+    background: var(--bg-page);
+    line-height: 1.55;
+    min-height: 100vh;
+  }
+  button { cursor: pointer; font-family: inherit; border: none; background: none; color: inherit; }
+  input, select, textarea { font-family: inherit; color: inherit; }
+  img { max-width: 100%; display: block; }
+
+  /* =========================================================================
+     HEADER + TOOLBAR
+     ========================================================================= */
+  .polymath-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: var(--space-md) var(--space-xl);
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border-faint);
+    box-shadow: var(--shadow-1);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .polymath-logo {
+    height: 56px;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .header-title {
+    flex: 1; text-align: center;
+    font-weight: 700; letter-spacing: 0.02em;
+    font-size: 1.15rem;
+  }
+  .header-title small {
+    display: block; margin-top: 2px; font-size: 0.78rem;
+    font-weight: 400; color: var(--text-soft);
+  }
+  .header-tools { display: flex; gap: var(--space-xs); }
+
+  /* =========================================================================
+     BUTTONS
+     ========================================================================= */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: 6px;
+    padding: 9px 16px;
+    background: var(--bg-card);
+    color: var(--text-dark);
+    border: 1.5px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    font-size: 0.92rem; font-weight: 600;
+    box-shadow: var(--shadow-1);
+    transition: all var(--transition);
+  }
+  .btn:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-2);
+    border-color: var(--accent);
+    color: var(--accent-strong);
+  }
+  .btn:active { transform: translateY(0.5px); box-shadow: var(--shadow-1); }
+  .btn-primary {
+    background: var(--accent-strong); color: #fff; border-color: var(--accent-strong);
+  }
+  .btn-primary:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-danger { color: var(--danger-strong); border-color: var(--danger-soft); }
+  .btn-danger:hover { background: var(--danger-bg); color: var(--danger-strong); border-color: var(--danger); }
+  .btn-sm { padding: 6px 12px; font-size: 0.82rem; }
+  .btn-icon { padding: 8px 10px; font-size: 1rem; min-width: 38px; }
+  .btn:disabled, .btn[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+  /* =========================================================================
+     CONTROL BAR (page settings, sheet title, actions)
+     ========================================================================= */
+  .control-bar {
+    max-width: 1500px; margin: 0 auto;
+    padding: var(--space-lg) var(--space-xl) var(--space-sm);
+    display: flex; flex-direction: column; gap: var(--space-sm);
+  }
+  .control-row {
+    display: flex; flex-wrap: wrap; gap: var(--space-sm);
+    align-items: center;
+  }
+  .ctl-group {
+    display: inline-flex; gap: 8px; align-items: center;
+    padding: 6px 12px;
+    background: var(--bg-card);
+    border: 1.5px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-1);
+  }
+  .ctl-group label {
+    font-size: 0.78rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-soft);
+  }
+  .ctl-group select, .ctl-group input[type="text"] {
+    padding: 4px 8px;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-sm);
+    background: var(--bg-soft);
+    font-size: 0.9rem;
+  }
+  .ctl-group select:focus, .ctl-group input:focus {
+    outline: none; border-color: var(--accent); background: #fff;
+  }
+
+  .title-input, .subtitle-input {
+    flex: 1; min-width: 240px;
+    padding: 10px 16px;
+    border: 1.5px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    font-size: 1.05rem; font-weight: 600;
+    box-shadow: var(--shadow-1);
+  }
+  .subtitle-input { font-size: 0.92rem; font-weight: 400; }
+  .title-input:focus, .subtitle-input:focus {
+    outline: none; border-color: var(--accent);
+  }
+
+  /* Save status pill */
+  .save-state {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px;
+    background: var(--success-bg);
+    color: var(--success-strong);
+    border: 1px solid #C8E6C9;
+    border-radius: var(--radius-pill);
+    font-size: 0.78rem; font-weight: 600;
+  }
+  .save-state.saving { background: var(--accent-bg); color: var(--accent-strong); border-color: var(--accent-soft); }
+  .save-state .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  /* =========================================================================
+     PAGE WORKSPACE — paper sheet with absolutely-positioned tiles inside
+     ========================================================================= */
+  .workspace {
+    max-width: 1500px; margin: 0 auto;
+    padding: var(--space-sm) var(--space-xl) var(--space-xl);
+    display: flex; flex-direction: column; align-items: center;
+    gap: var(--space-lg);
+  }
+
+  .sheet-wrap {
+    /* Scaling container — the actual sheet uses real mm dimensions for
+       the printer; we scale this wrapper down via CSS transform so it
+       fits on screen. The transform is set inline by JS. */
+    transform-origin: top center;
+    margin-bottom: -2vh; /* swallow some empty space from the scale */
+  }
+
+  .sheet {
+    position: relative;
+    background: #fff;
+    box-shadow: var(--shadow-2);
+    border-radius: 4px;
+    /* Width / height set inline by JS based on page size + orientation. */
+    width: var(--sheet-w, 210mm);
+    height: var(--sheet-h, 297mm);
+    overflow: hidden;
+    /* The interior grid (subtle dotted background) helps users align tiles
+       visually. Each cell = 5mm. */
+    background-image:
+      radial-gradient(circle at 1px 1px, #DDD 0.7px, transparent 0);
+    background-size: 5mm 5mm;
+  }
+
+  /* Safe-print zone outline — dashed, behind tiles */
+  .sheet-safe-zone {
+    position: absolute;
+    inset: var(--sheet-margin, 10mm);
+    border: 1px dashed var(--accent);
+    border-radius: 1px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Sheet header — title + subtitle drawn on the page */
+  .sheet-header {
+    position: absolute;
+    left: var(--sheet-margin, 10mm);
+    right: var(--sheet-margin, 10mm);
+    top: var(--sheet-margin, 10mm);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .sheet-header-title {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text-dark);
+    letter-spacing: 0.01em;
+    line-height: 1.2;
+  }
+  .sheet-header-subtitle {
+    font-size: 0.9rem;
+    color: var(--text-soft);
+    margin-top: 2px;
+  }
+  .sheet-header-divider {
+    margin-top: 5mm;
+    height: 1.5px;
+    background: var(--accent);
+    width: 30mm;
+  }
+
+  /* Footer logo + copyright on every printed sheet */
+  .sheet-footer-logo {
+    position: absolute;
+    right: var(--sheet-margin, 10mm);
+    bottom: 4mm;
+    height: var(--sheet-logo-h, 10mm);
+    width: auto;
+    pointer-events: none;
+    z-index: 0;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .sheet-footer-notice {
+    position: absolute;
+    left: var(--sheet-margin, 10mm);
+    right: calc(var(--sheet-margin, 10mm) + 35mm);
+    bottom: 4mm;
+    font-size: 0.55rem;
+    line-height: 1.25;
+    color: #BBBBBB;
+    font-style: italic;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* =========================================================================
+     TILE
+     -------------------------------------------------------------------------
+     Modular rectangle. Absolutely-positioned inside the sheet, in mm.
+     Has a header strip (drag handle + delete) + body (rich text + image),
+     8 resize handles (visible on hover or when selected), per-tile colour.
+     ========================================================================= */
+  .tile {
+    position: absolute;
+    background: var(--tile-bg, #fff);
+    border: 1.5px solid var(--tile-border, #DDD);
+    border-radius: 4px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    display: flex; flex-direction: column;
+    overflow: visible; /* handles need to extend slightly outside */
+    transition: box-shadow 0.15s ease, border-color 0.15s ease;
+    z-index: 1;
+  }
+  .tile:hover { box-shadow: 0 2px 6px rgba(0,0,0,0.1); z-index: 2; }
+  .tile.selected {
+    border-color: var(--accent-strong);
+    box-shadow: 0 0 0 1.5px var(--accent-strong), 0 4px 12px rgba(251,140,0,0.18);
+    z-index: 10;
+  }
+  .tile.dragging { transition: none; opacity: 0.85; cursor: grabbing; }
+  .tile.resizing { transition: none; }
+
+  /* Header strip — visible on hover or selection */
+  .tile-header {
+    height: 18px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 4px;
+    background: rgba(0,0,0,0.04);
+    border-bottom: 1px solid var(--tile-border, #DDD);
+    border-radius: 3px 3px 0 0;
+    font-size: 0.6rem;
+    color: var(--text-soft);
+    cursor: move;
+    user-select: none;
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+  }
+  .tile:hover .tile-header,
+  .tile.selected .tile-header { opacity: 1; }
+  .tile-header-tag {
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+    padding-left: 4px;
+  }
+  .tile-header-actions { display: flex; gap: 2px; }
+  .tile-mini-btn {
+    width: 14px; height: 14px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 3px;
+    color: var(--text-soft);
+    font-size: 0.7rem; line-height: 1;
+    transition: background var(--transition-fast), color var(--transition-fast);
+  }
+  .tile-mini-btn:hover { background: rgba(0,0,0,0.08); color: var(--text-dark); }
+  .tile-mini-btn.danger:hover { background: var(--danger-bg); color: var(--danger-strong); }
+
+  /* Tile body — rich-text + image */
+  .tile-body {
+    flex: 1;
+    padding: 8px 10px;
+    overflow: hidden;
+    font-size: var(--tile-font, 0.95rem);
+    line-height: 1.4;
+    color: var(--text-dark);
+    /* Stacking order driven by data attribute: 'above' | 'below' */
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+  }
+  .tile-body[data-placement="above"] { flex-direction: column-reverse; }
+
+  /* The editable text. Always contenteditable when the tile is in
+     edit mode; we toggle the attribute from JS. */
+  .tile-text {
+    outline: none;
+    min-height: 1.2em;
+    border-radius: 2px;
+    transition: background 0.15s ease, box-shadow 0.15s ease;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+  .tile-text:empty::before {
+    content: 'Type your notes here…';
+    color: var(--text-faint);
+    font-style: italic;
+    pointer-events: none;
+  }
+  .tile-text:focus {
+    background: rgba(255,255,255,0.9);
+    box-shadow: 0 0 0 1px var(--accent-soft);
+  }
+
+  /* List spacing in em so bullets/numbers scale with the text. */
+  .tile-text ul,
+  .tile-text ol {
+    margin: 0.35em 0 0.35em 1.6em;
+    padding-left: 0.4em;
+  }
+  .tile-text li { margin: 0.15em 0; }
+  .tile-text p { margin-bottom: 0.4em; }
+  .tile-text p:last-child { margin-bottom: 0; }
+
+  /* Image slot inside a tile */
+  .tile-image-wrap {
+    position: relative;
+    align-self: center;
+    /* Width set inline (scale × tile body width). */
+    max-width: 100%;
+  }
+  .tile-image-wrap img {
+    width: 100%;
+    height: auto;
+    display: block;
+    pointer-events: none;
+    user-select: none;
+  }
+  .tile-image-shield {
+    position: absolute; inset: 0;
+    cursor: move;
+    z-index: 4;
+  }
+
+  /* PowerPoint-style resize handles (8 around the perimeter). Hidden
+     until the tile is selected. */
+  .tile-handle {
+    position: absolute;
+    width: 9px; height: 9px;
+    background: #fff;
+    border: 1.5px solid var(--accent-strong);
+    border-radius: 2px;
+    z-index: 20;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+  }
+  .tile.selected .tile-handle { opacity: 1; pointer-events: auto; }
+  .tile-handle.nw { top: -5px;    left: -5px;     cursor: nwse-resize; }
+  .tile-handle.n  { top: -5px;    left: 50%;      transform: translateX(-50%); cursor: ns-resize; }
+  .tile-handle.ne { top: -5px;    right: -5px;    cursor: nesw-resize; }
+  .tile-handle.e  { top: 50%;     right: -5px;    transform: translateY(-50%); cursor: ew-resize; }
+  .tile-handle.se { bottom: -5px; right: -5px;    cursor: nwse-resize; }
+  .tile-handle.s  { bottom: -5px; left: 50%;      transform: translateX(-50%); cursor: ns-resize; }
+  .tile-handle.sw { bottom: -5px; left: -5px;     cursor: nesw-resize; }
+  .tile-handle.w  { top: 50%;     left: -5px;     transform: translateY(-50%); cursor: ew-resize; }
+
+  /* For image handles inside a tile (when the tile's image is selected). */
+  .tile-image-handle {
+    position: absolute;
+    width: 8px; height: 8px;
+    background: #fff;
+    border: 1.4px solid var(--accent-strong);
+    border-radius: 2px;
+    z-index: 6;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+  }
+  .tile-image-wrap.image-selected { outline: 1.4px dashed var(--accent-strong); outline-offset: 1px; }
+  .tile-image-wrap.image-selected .tile-image-handle { opacity: 1; }
+  .tile-image-handle.nw { top: -4px;    left: -4px;     cursor: nwse-resize; }
+  .tile-image-handle.n  { top: -4px;    left: 50%;      transform: translateX(-50%); cursor: ns-resize; }
+  .tile-image-handle.ne { top: -4px;    right: -4px;    cursor: nesw-resize; }
+  .tile-image-handle.e  { top: 50%;     right: -4px;    transform: translateY(-50%); cursor: ew-resize; }
+  .tile-image-handle.se { bottom: -4px; right: -4px;    cursor: nwse-resize; }
+  .tile-image-handle.s  { bottom: -4px; left: 50%;      transform: translateX(-50%); cursor: ns-resize; }
+  .tile-image-handle.sw { bottom: -4px; left: -4px;     cursor: nesw-resize; }
+  .tile-image-handle.w  { top: 50%;     left: -4px;     transform: translateY(-50%); cursor: ew-resize; }
+
+  /* Snap guides — coloured lines drawn over the sheet while dragging.
+     JS positions and toggles them. */
+  .snap-guide {
+    position: absolute;
+    background: var(--accent-strong);
+    box-shadow: 0 0 4px rgba(251,140,0,0.6);
+    pointer-events: none;
+    z-index: 50;
+    display: none;
+  }
+  .snap-guide.v { width: 1px; }
+  .snap-guide.h { height: 1px; }
+  .snap-guide.active { display: block; }
+  .snap-guide.center { background: var(--success-strong); box-shadow: 0 0 5px rgba(67,160,71,0.6); }
+
+  /* Live measurement pill while dragging */
+  .drag-readout {
+    position: absolute;
+    background: #1A1A1A;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: var(--radius-pill);
+    white-space: nowrap;
+    z-index: 100;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    pointer-events: none;
+    display: none;
+  }
+  .drag-readout.active { display: block; }
+
+  /* =========================================================================
+     FLOATING TILE INSPECTOR  (appears beside selected tile)
+     ========================================================================= */
+  .inspector {
+    position: fixed;
+    top: 84px;
+    right: 24px;
+    width: 280px;
+    max-height: calc(100vh - 110px);
+    background: var(--bg-card);
+    border: 1.5px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-3);
+    z-index: 200;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .inspector.open { display: flex; }
+
+  .inspector-header {
+    padding: 10px 14px;
+    background: var(--bg-soft);
+    border-bottom: 1px solid var(--border-faint);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .inspector-header h4 {
+    font-size: 0.92rem; font-weight: 700;
+    color: var(--text-dark);
+    letter-spacing: 0.02em;
+  }
+  .inspector-close {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    color: var(--text-soft);
+    font-size: 1.05rem;
+    transition: background var(--transition-fast);
+  }
+  .inspector-close:hover { background: var(--border-faint); color: var(--text-dark); }
+
+  .inspector-body {
+    overflow-y: auto;
+    padding: var(--space-md);
+    display: flex; flex-direction: column;
+    gap: var(--space-md);
+  }
+  .insp-section { display: flex; flex-direction: column; gap: 6px; }
+  .insp-label {
+    font-size: 0.7rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-soft);
+  }
+
+  /* Inline rich-text toolbar inside the inspector */
+  .rt-toolbar {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    padding: 6px;
+    background: var(--bg-soft);
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-md);
+  }
+  .rt-group { display: flex; gap: 2px; padding-right: 6px; border-right: 1px solid var(--border-soft); }
+  .rt-group:last-child { border-right: none; }
+  .rt-btn {
+    min-width: 28px; height: 28px;
+    padding: 0 7px;
+    border-radius: 4px;
+    font-weight: 700; font-size: 0.78rem;
+    color: var(--text-medium);
+    background: transparent;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: all var(--transition-fast);
+  }
+  .rt-btn:hover { background: var(--accent-bg); color: var(--accent-strong); }
+  .rt-btn.active { background: var(--accent-strong); color: #fff; }
+  .rt-btn[data-cmd="bold"] { font-weight: 800; }
+  .rt-btn[data-cmd="italic"] { font-style: italic; }
+  .rt-btn[data-cmd="underline"] { text-decoration: underline; }
+  .rt-select {
+    height: 28px;
+    padding: 0 6px;
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    font-size: 0.78rem;
+    background: var(--bg-card);
+  }
+  .rt-color {
+    width: 28px; height: 28px;
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    background: transparent;
+    padding: 2px;
+    cursor: pointer;
+  }
+
+  /* Colour-chip picker for tile background */
+  .colour-grid {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 5px;
+  }
+  .colour-chip {
+    aspect-ratio: 1;
+    border: 2px solid var(--border-soft);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: transform var(--transition-fast), border-color var(--transition-fast);
+  }
+  .colour-chip:hover { transform: scale(1.08); border-color: var(--accent); }
+  .colour-chip.active { border-color: var(--accent-strong); box-shadow: 0 0 0 2px var(--accent-soft); }
+
+  /* Image picker zone */
+  .insp-image-zone {
+    border: 2px dashed var(--border-medium);
+    border-radius: var(--radius-md);
+    padding: 14px;
+    background: var(--bg-soft);
+    text-align: center;
+    cursor: pointer;
+    color: var(--text-soft);
+    font-size: 0.85rem;
+    transition: all var(--transition-fast);
+    outline: none;
+  }
+  .insp-image-zone:hover, .insp-image-zone:focus,
+  .insp-image-zone.drag-over {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+    color: var(--accent-strong);
+  }
+  .insp-image-zone img {
+    max-height: 80px; margin: 0 auto;
+  }
+
+  .insp-row {
+    display: grid;
+    grid-template-columns: 70px 1fr 50px;
+    gap: 8px;
+    align-items: center;
+  }
+  .insp-row label {
+    font-size: 0.78rem;
+    color: var(--text-medium);
+    font-weight: 600;
+  }
+  .insp-row input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent-strong);
+  }
+  .insp-row .read {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent-strong);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .insp-toggle-row {
+    display: flex; gap: 6px;
+  }
+  .insp-toggle-row .btn-sm { flex: 1; }
+  .insp-toggle-row .btn-sm.active {
+    background: var(--accent-strong);
+    color: #fff;
+    border-color: var(--accent-strong);
+  }
+
+  /* =========================================================================
+     EMPTY STATE
+     ========================================================================= */
+  .empty-state-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: var(--space-md);
+    pointer-events: none;
+    z-index: 0;
+    color: var(--text-soft);
+  }
+  .empty-state-overlay .es-icon { font-size: 3rem; opacity: 0.3; }
+  .empty-state-overlay .es-text {
+    font-size: 1rem; font-weight: 600;
+    max-width: 240px; text-align: center;
+    color: var(--text-soft);
+  }
+  .empty-state-overlay .es-hint {
+    font-size: 0.82rem; color: var(--text-faint);
+    text-align: center;
+  }
+
+  /* =========================================================================
+     TOAST
+     ========================================================================= */
+  #toastStack {
+    position: fixed; bottom: 20px; right: 20px;
+    display: flex; flex-direction: column; gap: 8px;
+    z-index: 1000;
+    pointer-events: none;
+  }
+  .toast {
+    background: var(--text-dark); color: #fff;
+    padding: 10px 16px;
+    border-radius: var(--radius-md);
+    font-size: 0.88rem;
+    box-shadow: var(--shadow-3);
+    max-width: 320px;
+    animation: toast-in 0.25s ease forwards, toast-out 0.3s ease 2.5s forwards;
+    opacity: 0;
+  }
+  .toast.success { background: var(--success-strong); }
+  .toast.error { background: var(--danger-strong); }
+  @keyframes toast-in { to { opacity: 1; transform: translateY(0); } }
+  @keyframes toast-out { to { opacity: 0; transform: translateY(6px); } }
+
+  /* =========================================================================
+     PRINT STYLES
+     ========================================================================= */
+  /* The @page rule itself is injected into #pagePrintRule by JS so it
+     matches the chosen page size + orientation. */
+  @media print {
+    body { background: #fff; }
+    .polymath-header, .control-bar, .inspector, #toastStack,
+    .empty-state-overlay { display: none !important; }
+    .workspace { padding: 0; max-width: none; gap: 0; }
+    .sheet-wrap {
+      transform: none !important;
+      margin: 0 !important;
+      box-shadow: none;
+    }
+    .sheet {
+      box-shadow: none;
+      border-radius: 0;
+      page-break-after: always;
+      background-image: none; /* hide the dotted grid */
+    }
+    .sheet:last-child { page-break-after: auto; }
+    .sheet-safe-zone { display: none; }
+    .tile {
+      box-shadow: none !important;
+      border-color: var(--tile-border, #BBB) !important;
+      transition: none !important;
+    }
+    .tile.selected { outline: none; box-shadow: none !important; }
+    .tile-header { display: none !important; } /* hide the drag chrome */
+    .tile-handle, .tile-image-handle { display: none !important; }
+    .tile-image-shield { display: none !important; }
+    .tile-body { padding: 8px 10px; }
+    .snap-guide, .drag-readout { display: none !important; }
+    .sheet-footer-logo, .sheet-footer-notice {
+      print-color-adjust: exact;
+      -webkit-print-color-adjust: exact;
+    }
+  }
+
+  /* =========================================================================
+     RESPONSIVE
+     ========================================================================= */
+  @media (max-width: 900px) {
+    .polymath-header { padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
+    .header-title { order: 3; flex-basis: 100%; }
+    .control-bar { padding: 12px 16px; }
+    .inspector { right: 8px; width: calc(100% - 16px); max-width: 280px; }
+  }
+</style>
+
+<!-- Dynamic @page rule — JS writes the chosen page size into this element
+     so the printed PDF uses the right paper. -->
+<style id="pagePrintRule">@page { size: A4 portrait; margin: 0; }</style>
+</head>
+<body>
+
+<!-- ===================== HEADER ===================== -->
+<header class="polymath-header">
+  <img class="polymath-logo"
+       src="https://dl.dropboxusercontent.com/scl/fi/h40yjlyg8ldefwfaa3dib/polymath-logo-sticker.png?rlkey=o1ra4taqy79gt9t8u096v82zj"
+       alt="Polymath Learning Centre" />
+  <div class="header-title">
+    Polymath Cheatsheet Maker
+    <small>Build a study sheet from drag-and-resize tiles</small>
+  </div>
+  <div class="header-tools">
+    <span class="save-state" id="saveState"><span class="dot"></span><span id="saveStateText">Saved</span></span>
+    <button class="btn btn-icon" id="printBtn" title="Print / Export PDF">🖨</button>
+  </div>
+</header>
+
+<!-- ===================== CONTROL BAR ===================== -->
+<section class="control-bar">
+  <div class="control-row">
+    <input type="text" id="sheetTitle" class="title-input" placeholder="Cheatsheet title" />
+    <input type="text" id="sheetSubtitle" class="subtitle-input" placeholder="Subtitle (e.g. P5 Fractions Cheatsheet)" />
+  </div>
+  <div class="control-row">
+    <div class="ctl-group">
+      <label>Page</label>
+      <select id="pageSizeSelect">
+        <option value="a4">A4 (210 × 297 mm)</option>
+        <option value="a3">A3 (297 × 420 mm)</option>
+        <option value="a5">A5 (148 × 210 mm)</option>
+        <option value="letter">Letter (8.5 × 11 in)</option>
+        <option value="legal">Legal (8.5 × 14 in)</option>
+        <option value="tabloid">Tabloid (11 × 17 in)</option>
+      </select>
+      <select id="pageOrientSelect">
+        <option value="portrait">Portrait</option>
+        <option value="landscape">Landscape</option>
+      </select>
+    </div>
+
+    <div class="ctl-group">
+      <label>Tiles</label>
+      <button class="btn btn-sm btn-primary" id="addTileBtn">＋ Add tile</button>
+      <button class="btn btn-sm" id="addPageBtn" title="Append another page to the cheatsheet">＋ Add page</button>
+      <button class="btn btn-sm btn-danger" id="deletePageBtn" title="Delete the current page">🗑 Delete page</button>
+    </div>
+
+    <div class="ctl-group">
+      <label>Export</label>
+      <button class="btn btn-sm" id="exportJsonBtn">⤓ JSON</button>
+      <button class="btn btn-sm" id="importJsonBtn">⤒ Import</button>
+      <input type="file" id="importJsonInput" accept="application/json" style="display:none" />
+    </div>
+
+    <div class="ctl-group">
+      <label>Footer</label>
+      <label style="font-size:0.82rem;cursor:pointer;display:inline-flex;gap:4px;align-items:center;">
+        <input type="checkbox" id="showLogoChk" checked /> Logo
+      </label>
+      <label style="font-size:0.82rem;cursor:pointer;display:inline-flex;gap:4px;align-items:center;">
+        <input type="checkbox" id="showCopyChk" checked /> Copyright
+      </label>
+    </div>
+
+    <div class="ctl-group">
+      <label>Reset</label>
+      <button class="btn btn-sm btn-danger" id="clearAllBtn" title="Start over with a blank cheatsheet">Clear all</button>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== WORKSPACE ===================== -->
+<main class="workspace">
+  <div class="sheet-wrap" id="sheetWrap">
+    <!-- Sheets are inserted here by JS, one per page. -->
+  </div>
+</main>
+
+<!-- ===================== INSPECTOR (floating) ===================== -->
+<aside class="inspector" id="inspector">
+  <div class="inspector-header">
+    <h4>Tile properties</h4>
+    <button class="inspector-close" id="inspectorClose" title="Close">✕</button>
+  </div>
+  <div class="inspector-body">
+
+    <!-- Text formatting -->
+    <div class="insp-section">
+      <span class="insp-label">Format</span>
+      <div class="rt-toolbar" id="rtToolbar">
+        <div class="rt-group">
+          <select class="rt-select" data-cmd="fontName" title="Font">
+            <option value="Century Gothic">Century Gothic</option>
+            <option value="Arial">Arial</option>
+            <option value="Verdana">Verdana</option>
+            <option value="Comic Sans MS">Comic Sans MS</option>
+            <option value="Georgia">Georgia</option>
+            <option value="Times New Roman">Times</option>
+            <option value="Courier New">Courier</option>
+          </select>
+        </div>
+        <div class="rt-group">
+          <button class="rt-btn" data-action="text-smaller" title="Smaller text (also shrinks bullets)">A−</button>
+          <button class="rt-btn" data-action="text-bigger"  title="Bigger text (also grows bullets)">A+</button>
+        </div>
+        <div class="rt-group">
+          <button class="rt-btn" data-cmd="bold"      title="Bold (Ctrl+B)">B</button>
+          <button class="rt-btn" data-cmd="italic"    title="Italic (Ctrl+I)">I</button>
+          <button class="rt-btn" data-cmd="underline" title="Underline (Ctrl+U)">U</button>
+        </div>
+        <div class="rt-group">
+          <label class="rt-btn" title="Text colour" style="position:relative;">A
+            <input type="color" class="rt-color" data-cmd="foreColor"
+                   value="#1A1A1A"
+                   style="position:absolute;inset:0;opacity:0;cursor:pointer;" />
+          </label>
+          <label class="rt-btn" title="Highlight" style="position:relative;background:#FFF59D;">✦
+            <input type="color" class="rt-color" data-cmd="hiliteColor"
+                   value="#FFF59D"
+                   style="position:absolute;inset:0;opacity:0;cursor:pointer;" />
+          </label>
+        </div>
+        <div class="rt-group">
+          <button class="rt-btn" data-cmd="insertUnorderedList" title="Bullet list">•</button>
+          <button class="rt-btn" data-cmd="insertOrderedList"   title="Numbered list">1.</button>
+        </div>
+        <div class="rt-group">
+          <button class="rt-btn" data-cmd="removeFormat" title="Clear formatting">✕f</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tile background colour -->
+    <div class="insp-section">
+      <span class="insp-label">Tile colour</span>
+      <div class="colour-grid" id="colourGrid"></div>
+    </div>
+
+    <!-- Image slot -->
+    <div class="insp-section">
+      <span class="insp-label">Picture</span>
+      <div class="insp-image-zone" id="imageZone" tabindex="0">
+        📷 Click here, then paste a picture (Ctrl+V / ⌘+V) — or drop one
+      </div>
+      <div class="insp-toggle-row" id="imagePlacementRow" style="display:none;">
+        <button class="btn btn-sm" data-place="above">↑ Above text</button>
+        <button class="btn btn-sm" data-place="below">↓ Below text</button>
+      </div>
+      <div class="insp-row" id="imageSizeRow" style="display:none;">
+        <label>Size</label>
+        <input type="range" id="imageScaleSlider" min="30" max="100" step="1" value="80" />
+        <span class="read" id="imageScaleRead">80%</span>
+      </div>
+      <button class="btn btn-sm btn-danger" id="removeImageBtn" style="display:none;">Remove picture</button>
+    </div>
+
+    <!-- Position + size readouts (for the selected tile) -->
+    <div class="insp-section">
+      <span class="insp-label">Tile geometry</span>
+      <div class="insp-row">
+        <label>Width</label>
+        <input type="range" id="tileWidthSlider" min="20" max="300" step="1" />
+        <span class="read" id="tileWidthRead">— mm</span>
+      </div>
+      <div class="insp-row">
+        <label>Height</label>
+        <input type="range" id="tileHeightSlider" min="20" max="400" step="1" />
+        <span class="read" id="tileHeightRead">— mm</span>
+      </div>
+    </div>
+
+    <div class="insp-section">
+      <button class="btn btn-sm btn-danger" id="deleteTileBtn">🗑 Delete this tile</button>
+      <button class="btn btn-sm" id="duplicateTileBtn">⎘ Duplicate tile</button>
+    </div>
+
+  </div>
+</aside>
+
+<input type="file" id="hiddenImageInput" accept="image/*" style="display:none" />
+
+<div id="toastStack"></div>
+
+<script>
+'use strict';
+/* =========================================================================
+   POLYMATH CHEATSHEET MAKER — application script
+   ========================================================================= */
+
+/* ---------- Toasts ---------- */
+function toast(message, kind) {
+  const stack = document.getElementById('toastStack');
+  const el = document.createElement('div');
+  el.className = 'toast' + (kind ? ' ' + kind : '');
+  el.textContent = message;
+  stack.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+/* ---------- Misc helpers ---------- */
+let uidCounter = 0;
+const newId = () => 'id_' + Date.now().toString(36) + '_' + (++uidCounter).toString(36);
+
+function escapeAttr(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function clamp(n, lo, hi) {
+  if (!Number.isFinite(+n)) return lo;
+  return Math.max(lo, Math.min(hi, +n));
+}
+
+/* =========================================================================
+   PAGE SIZES
+   -------------------------------------------------------------------------
+   Real-world page dimensions in millimetres. The user picks one from the
+   "Page" selector; the sheet renders at exact mm dimensions and the print
+   @page rule is updated to match so the PDF prints at the right size.
+   ========================================================================= */
+const PAGE_SIZES = {
+  a3:      { w: 297,   h: 420,   label: 'A3' },
+  a4:      { w: 210,   h: 297,   label: 'A4' },
+  a5:      { w: 148,   h: 210,   label: 'A5' },
+  letter:  { w: 215.9, h: 279.4, label: 'Letter' },
+  legal:   { w: 215.9, h: 355.6, label: 'Legal' },
+  tabloid: { w: 279.4, h: 431.8, label: 'Tabloid' },
+};
+
+const COPYRIGHT_NOTICE =
+  '© Polymath Learning Centre LLP. This cheatsheet may not be reproduced, copied, or distributed without the prior written permission of Polymath Learning Centre LLP.';
+
+const POLYMATH_LOGO_URL =
+  'https://dl.dropboxusercontent.com/scl/fi/h40yjlyg8ldefwfaa3dib/polymath-logo-sticker.png?rlkey=o1ra4taqy79gt9t8u096v82zj';
+
+const PAGE_MARGIN_MM = 10; // safe-print margin
+
+/* =========================================================================
+   STATE
+   -------------------------------------------------------------------------
+   One cheatsheet doc = title/subtitle + page-size choice + array of pages,
+   where each page has an array of tiles. Tile coords + dimensions are all
+   in mm so they're page-relative and resolution-independent.
+   ========================================================================= */
+const TILE_COLOURS = [
+  '#FFFFFF', '#FFF3E0', '#E3F2FD', '#F1F8E9',
+  '#F3E5F5', '#FFEBEE', '#FFF9C4', '#E0F2F1',
+];
+
+const state = {
+  title: 'My Cheatsheet',
+  subtitle: '',
+  pageSizeId: 'a4',
+  orientation: 'portrait',
+  showLogo: true,
+  showCopyright: true,
+  pages: [ /* { id, tiles: [Tile] } */ ],
+  selectedTileId: null,
+  selectedImageTileId: null, // separate selection for image-within-tile
+  zoneFontStep: {}, // per-tile current font step for A+ / A- bookkeeping
+};
+
+const STORAGE_KEY = 'polymath.cheatsheet.v1';
+let saveTimer = null;
+
+function persist() {
+  clearTimeout(saveTimer);
+  setSaveState('saving', 'Saving…');
+  saveTimer = setTimeout(() => {
+    try {
+      const payload = {
+        title: state.title,
+        subtitle: state.subtitle,
+        pageSizeId: state.pageSizeId,
+        orientation: state.orientation,
+        showLogo: state.showLogo,
+        showCopyright: state.showCopyright,
+        pages: state.pages,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      setSaveState('saved', 'Saved');
+    } catch (e) {
+      console.error('save failed', e);
+      setSaveState('error', 'Save error');
+    }
+  }, 350);
+}
+
+function setSaveState(kind, label) {
+  const el = document.getElementById('saveState');
+  if (!el) return;
+  el.classList.toggle('saving', kind === 'saving');
+  document.getElementById('saveStateText').textContent = label;
+}
+
+function loadFromStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    if (!parsed) return false;
+    Object.assign(state, {
+      title: parsed.title || 'My Cheatsheet',
+      subtitle: parsed.subtitle || '',
+      pageSizeId: parsed.pageSizeId || 'a4',
+      orientation: parsed.orientation || 'portrait',
+      showLogo: parsed.showLogo !== false,
+      showCopyright: parsed.showCopyright !== false,
+      pages: Array.isArray(parsed.pages) && parsed.pages.length ? parsed.pages.map(upgradePage) : [makeEmptyPage()],
+    });
+    return true;
+  } catch (e) { console.warn('load failed', e); return false; }
+}
+
+function upgradePage(p) {
+  return {
+    id: p.id || newId(),
+    tiles: Array.isArray(p.tiles) ? p.tiles.map(upgradeTile) : [],
+  };
+}
+function upgradeTile(t) {
+  return {
+    id: t.id || newId(),
+    x: clamp(t.x, 0, 9999),
+    y: clamp(t.y, 0, 9999),
+    w: clamp(t.w, 20, 999),
+    h: clamp(t.h, 20, 999),
+    color: TILE_COLOURS.includes(t.color) ? t.color : TILE_COLOURS[0],
+    html: typeof t.html === 'string' ? t.html : '',
+    image: normalizeTileImage(t.image),
+    fontStep: clamp(t.fontStep, 1, 7),
+  };
+}
+function normalizeTileImage(im) {
+  if (!im || typeof im !== 'object') return { dataUrl: '', placement: 'below', scale: 0.85 };
+  return {
+    dataUrl: typeof im.dataUrl === 'string' ? im.dataUrl : '',
+    placement: im.placement === 'above' ? 'above' : 'below',
+    scale: clamp(im.scale, 0.10, 1.0) || 0.85,
+  };
+}
+
+function makeEmptyPage() {
+  return { id: newId(), tiles: [] };
+}
+
+/* =========================================================================
+   TILE FACTORY
+   -------------------------------------------------------------------------
+   Default tile placement: a sensible cascade from the top-left safe margin,
+   stepping ~6 mm per existing tile so new tiles aren't stacked exactly on
+   top of each other.
+   ========================================================================= */
+function defaultTilePosition(pageIdx) {
+  const page = state.pages[pageIdx];
+  const n = page.tiles.length;
+  const startX = PAGE_MARGIN_MM;
+  const startY = PAGE_MARGIN_MM + 20; // below the header
+  return {
+    x: clamp(startX + (n * 6), PAGE_MARGIN_MM, sheetSizeMm().w - 60),
+    y: clamp(startY + (n * 6), PAGE_MARGIN_MM + 20, sheetSizeMm().h - 50),
+  };
+}
+
+function makeTile(pageIdx) {
+  const pos = defaultTilePosition(pageIdx);
+  return {
+    id: newId(),
+    x: pos.x, y: pos.y,
+    w: 70, h: 50,
+    color: TILE_COLOURS[0],
+    html: '',
+    image: { dataUrl: '', placement: 'below', scale: 0.85 },
+    fontStep: 3,
+  };
+}
+
+/* =========================================================================
+   GEOMETRY HELPERS
+   ========================================================================= */
+function sheetSizeMm() {
+  const def = PAGE_SIZES[state.pageSizeId] || PAGE_SIZES.a4;
+  return state.orientation === 'landscape'
+    ? { w: def.h, h: def.w }
+    : { w: def.w, h: def.h };
+}
+
+/* Convert mm ↔ px using the sheet element's actual rendered pixel width.
+   The sheet has its width set to e.g. 210mm via CSS, so its bounding rect
+   gives us a true px-per-mm at the current screen DPI. */
+function sheetPxPerMm(sheetEl) {
+  if (!sheetEl) return 3.78; // 96dpi default
+  const r = sheetEl.getBoundingClientRect();
+  const mm = sheetSizeMm().w;
+  return mm ? (r.width / mm) : 3.78;
+}
+
+/* Find the sheet element a tile lives on (or its current page). */
+function getSheetEl(pageIdx) {
+  return document.querySelector(`.sheet[data-page-idx="${pageIdx}"]`);
+}
+
+/* Locate which page a given tile belongs to. Returns { pageIdx, tile }. */
+function findTile(tileId) {
+  for (let i = 0; i < state.pages.length; i++) {
+    const t = state.pages[i].tiles.find(x => x.id === tileId);
+    if (t) return { pageIdx: i, tile: t };
+  }
+  return null;
+}
+
+/* =========================================================================
+   RENDERING
+   ========================================================================= */
+const sheetWrap = document.getElementById('sheetWrap');
+
+function renderAll() {
+  renderHeader();
+  renderSheets();
+  renderInspector();
+  applyPagePrintRule();
+  fitSheetToViewport();
+}
+
+function renderHeader() {
+  document.getElementById('sheetTitle').value = state.title || '';
+  document.getElementById('sheetSubtitle').value = state.subtitle || '';
+  document.getElementById('pageSizeSelect').value = state.pageSizeId;
+  document.getElementById('pageOrientSelect').value = state.orientation;
+  document.getElementById('showLogoChk').checked = !!state.showLogo;
+  document.getElementById('showCopyChk').checked = !!state.showCopyright;
+  document.getElementById('deletePageBtn').disabled = state.pages.length <= 1;
+}
+
+function renderSheets() {
+  sheetWrap.innerHTML = '';
+  const size = sheetSizeMm();
+
+  state.pages.forEach((page, pageIdx) => {
+    const sheet = document.createElement('section');
+    sheet.className = 'sheet';
+    sheet.dataset.pageIdx = String(pageIdx);
+    sheet.style.setProperty('--sheet-w', size.w + 'mm');
+    sheet.style.setProperty('--sheet-h', size.h + 'mm');
+    sheet.style.setProperty('--sheet-margin', PAGE_MARGIN_MM + 'mm');
+    sheet.style.setProperty('--sheet-logo-h', '10mm');
+
+    // Safe-zone outline
+    const safe = document.createElement('div');
+    safe.className = 'sheet-safe-zone';
+    sheet.appendChild(safe);
+
+    // Sheet header
+    if (pageIdx === 0 && (state.title || state.subtitle)) {
+      const header = document.createElement('div');
+      header.className = 'sheet-header';
+      const titleEl = document.createElement('div');
+      titleEl.className = 'sheet-header-title';
+      titleEl.textContent = state.title || '';
+      header.appendChild(titleEl);
+      if (state.subtitle) {
+        const sub = document.createElement('div');
+        sub.className = 'sheet-header-subtitle';
+        sub.textContent = state.subtitle;
+        header.appendChild(sub);
+      }
+      const div = document.createElement('div');
+      div.className = 'sheet-header-divider';
+      header.appendChild(div);
+      sheet.appendChild(header);
+    } else if (state.pages.length > 1) {
+      // Show a small page indicator on subsequent pages
+      const pageNum = document.createElement('div');
+      pageNum.className = 'sheet-header';
+      const t = document.createElement('div');
+      t.className = 'sheet-header-subtitle';
+      t.textContent = `Page ${pageIdx + 1} of ${state.pages.length}`;
+      pageNum.appendChild(t);
+      sheet.appendChild(pageNum);
+    }
+
+    // Empty-state nudge when a page has no tiles
+    if (page.tiles.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'empty-state-overlay';
+      empty.innerHTML = `
+        <div class="es-icon">🗒️</div>
+        <div class="es-text">Click <b>＋ Add tile</b> to start your cheatsheet</div>
+        <div class="es-hint">Drag tiles around the page. Resize from the corners. Paste pictures inside.</div>`;
+      sheet.appendChild(empty);
+    }
+
+    // Tiles
+    page.tiles.forEach(tile => sheet.appendChild(renderTile(tile, pageIdx)));
+
+    // Footer logo / copyright
+    if (state.showCopyright) {
+      const notice = document.createElement('div');
+      notice.className = 'sheet-footer-notice';
+      notice.textContent = COPYRIGHT_NOTICE;
+      sheet.appendChild(notice);
+    }
+    if (state.showLogo) {
+      const logo = document.createElement('img');
+      logo.className = 'sheet-footer-logo';
+      logo.src = POLYMATH_LOGO_URL;
+      logo.alt = 'Polymath Learning Centre';
+      sheet.appendChild(logo);
+    }
+
+    // Snap guides container — invisible elements positioned by JS while dragging
+    for (let i = 0; i < 6; i++) {
+      const g = document.createElement('div');
+      g.className = 'snap-guide';
+      g.dataset.guide = String(i);
+      sheet.appendChild(g);
+    }
+    const readout = document.createElement('div');
+    readout.className = 'drag-readout';
+    readout.dataset.role = 'readout';
+    sheet.appendChild(readout);
+
+    sheetWrap.appendChild(sheet);
+  });
+}
+
+function renderTile(tile, pageIdx) {
+  const el = document.createElement('div');
+  el.className = 'tile';
+  el.dataset.tileId = tile.id;
+  if (state.selectedTileId === tile.id) el.classList.add('selected');
+  el.style.left = tile.x + 'mm';
+  el.style.top = tile.y + 'mm';
+  el.style.width = tile.w + 'mm';
+  el.style.height = tile.h + 'mm';
+  el.style.setProperty('--tile-bg', tile.color);
+  // Darker border for non-white tiles
+  const borderColor = (tile.color === '#FFFFFF') ? '#DDD' : tile.color.replace(/^#/, '#');
+  el.style.setProperty('--tile-border', tile.color === '#FFFFFF' ? '#D5D5D0' : darkenColour(tile.color, 0.12));
+
+  // Header strip (drag handle)
+  const header = document.createElement('div');
+  header.className = 'tile-header';
+  header.innerHTML = `
+    <span class="tile-header-tag">⋮⋮ drag</span>
+    <span class="tile-header-actions">
+      <button class="tile-mini-btn" data-action="duplicate" title="Duplicate">⎘</button>
+      <button class="tile-mini-btn danger" data-action="delete" title="Delete">✕</button>
+    </span>`;
+  el.appendChild(header);
+
+  // Body
+  const body = document.createElement('div');
+  body.className = 'tile-body';
+  body.dataset.placement = tile.image.placement;
+  // Font size from step (1..7) → em
+  body.style.setProperty('--tile-font', stepToEm(tile.fontStep || 3) + 'rem');
+
+  // Text
+  const text = document.createElement('div');
+  text.className = 'tile-text';
+  text.contentEditable = 'true';
+  text.spellcheck = true;
+  text.dataset.tileId = tile.id;
+  text.innerHTML = tile.html || '';
+  body.appendChild(text);
+
+  // Image (if any)
+  if (tile.image.dataUrl) {
+    const wrap = document.createElement('div');
+    wrap.className = 'tile-image-wrap';
+    wrap.dataset.tileId = tile.id;
+    wrap.style.width = Math.round(tile.image.scale * 100) + '%';
+    if (state.selectedImageTileId === tile.id) wrap.classList.add('image-selected');
+    const img = document.createElement('img');
+    img.src = tile.image.dataUrl;
+    img.alt = '';
+    img.draggable = false;
+    wrap.appendChild(img);
+    // Click shield: clicking the image selects it (inside the tile).
+    const shield = document.createElement('div');
+    shield.className = 'tile-image-shield';
+    shield.dataset.tileId = tile.id;
+    wrap.appendChild(shield);
+    // 8 handles for the image
+    ['nw','n','ne','e','se','s','sw','w'].forEach(dir => {
+      const h = document.createElement('div');
+      h.className = 'tile-image-handle ' + dir;
+      h.dataset.handle = dir;
+      h.dataset.tileId = tile.id;
+      wrap.appendChild(h);
+    });
+    body.appendChild(wrap);
+  }
+
+  el.appendChild(body);
+
+  // 8 tile resize handles (visible only when selected)
+  ['nw','n','ne','e','se','s','sw','w'].forEach(dir => {
+    const h = document.createElement('div');
+    h.className = 'tile-handle ' + dir;
+    h.dataset.handle = dir;
+    h.dataset.tileId = tile.id;
+    el.appendChild(h);
+  });
+
+  return el;
+}
+
+/* Step 1..7 → font-size in rem. Same scale we use in the flashcard app
+   so it feels familiar; 3 is "normal" (1rem). */
+function stepToEm(step) {
+  const map = { 1: 0.62, 2: 0.78, 3: 0.95, 4: 1.12, 5: 1.32, 6: 1.6, 7: 1.9 };
+  return map[clamp(step, 1, 7)] || 0.95;
+}
+
+/* Quick colour-darken for tile border. Takes a hex like "#FFF3E0" and a
+   factor like 0.12, returns "rgba(r,g,b,1)" with each channel scaled. */
+function darkenColour(hex, factor) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return '#D5D5D0';
+  const r = parseInt(m[1], 16) * (1 - factor);
+  const g = parseInt(m[2], 16) * (1 - factor);
+  const b = parseInt(m[3], 16) * (1 - factor);
+  return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+}
+
+/* Scale the entire sheet preview down so it fits the viewport while
+   preserving its true mm dimensions for printing. */
+function fitSheetToViewport() {
+  const size = sheetSizeMm();
+  // Available horizontal space in the workspace
+  const workspace = document.querySelector('.workspace');
+  if (!workspace) return;
+  const available = workspace.getBoundingClientRect().width - 32;
+  // Convert mm to px at 96 DPI (CSS spec). 1mm ≈ 3.7795px.
+  const mmToPx = 3.7795275591;
+  const desired = size.w * mmToPx;
+  let scale = desired ? Math.min(1, available / desired) : 1;
+  // Don't scale below 0.35 — better to scroll than to make text unreadable
+  scale = Math.max(0.35, scale);
+  sheetWrap.style.transform = `scale(${scale})`;
+  // Compensate for the visual gap created by scaling
+  const scaledHeightLoss = size.h * mmToPx * (1 - scale) * state.pages.length;
+  sheetWrap.style.marginBottom = `-${scaledHeightLoss}px`;
+  // Stash the current preview scale so drag/drop can convert mouse-px → mm.
+  sheetWrap.dataset.scale = String(scale);
+}
+
+/* The reverse of fitSheetToViewport's scale — used to translate mouse
+   deltas in viewport pixels into mm on the actual sheet. */
+function previewScale() {
+  return parseFloat(sheetWrap.dataset.scale || '1') || 1;
+}
+
+/* =========================================================================
+   PRINT @PAGE RULE
+   ========================================================================= */
+function applyPagePrintRule() {
+  const size = sheetSizeMm();
+  const el = document.getElementById('pagePrintRule');
+  if (el) el.textContent = `@page { size: ${size.w}mm ${size.h}mm; margin: 0; }`;
+}
+
+/* =========================================================================
+   TILE OPERATIONS
+   ========================================================================= */
+function addTile(pageIdx) {
+  if (pageIdx == null) {
+    // Default: the page the selected tile lives on, or the first page.
+    if (state.selectedTileId) {
+      const f = findTile(state.selectedTileId);
+      if (f) pageIdx = f.pageIdx;
+    }
+    if (pageIdx == null) pageIdx = 0;
+  }
+  const tile = makeTile(pageIdx);
+  state.pages[pageIdx].tiles.push(tile);
+  state.selectedTileId = tile.id;
+  state.selectedImageTileId = null;
+  persist();
+  renderAll();
+  // Focus its text immediately for typing
+  setTimeout(() => {
+    const el = document.querySelector(`.tile-text[data-tile-id="${tile.id}"]`);
+    if (el) el.focus();
+  }, 50);
+}
+
+function deleteTile(tileId) {
+  const found = findTile(tileId);
+  if (!found) return;
+  if (!confirm('Delete this tile?')) return;
+  state.pages[found.pageIdx].tiles = state.pages[found.pageIdx].tiles.filter(t => t.id !== tileId);
+  if (state.selectedTileId === tileId) state.selectedTileId = null;
+  if (state.selectedImageTileId === tileId) state.selectedImageTileId = null;
+  persist();
+  renderAll();
+}
+
+function duplicateTile(tileId) {
+  const found = findTile(tileId);
+  if (!found) return;
+  const copy = JSON.parse(JSON.stringify(found.tile));
+  copy.id = newId();
+  // Nudge a little so it's visible
+  copy.x = clamp(copy.x + 6, PAGE_MARGIN_MM, sheetSizeMm().w - copy.w - PAGE_MARGIN_MM);
+  copy.y = clamp(copy.y + 6, PAGE_MARGIN_MM, sheetSizeMm().h - copy.h - PAGE_MARGIN_MM);
+  state.pages[found.pageIdx].tiles.push(copy);
+  state.selectedTileId = copy.id;
+  persist();
+  renderAll();
+}
+
+function selectTile(tileId) {
+  state.selectedTileId = tileId;
+  state.selectedImageTileId = null;
+  renderAll();
+}
+
+function selectImageInTile(tileId) {
+  state.selectedTileId = tileId;
+  state.selectedImageTileId = tileId;
+  renderAll();
+}
+
+function updateTile(tileId, patch) {
+  const f = findTile(tileId);
+  if (!f) return;
+  Object.assign(f.tile, patch);
+  persist();
+}
+
+/* =========================================================================
+   DRAG / RESIZE
+   -------------------------------------------------------------------------
+   Single state machine handling four gestures:
+     1. tile-move    — drag the header strip or empty tile body
+     2. tile-resize  — drag a corner/edge handle of the tile
+     3. image-move   — drag the image inside a tile
+     4. image-resize — drag a corner/edge handle of the image inside a tile
+   Modifiers while resizing:
+     Shift → keep aspect ratio (proportional)
+     Alt   → resize from centre (opposite side moves equally)
+   While dragging tiles, snap guides appear when the moving tile's centre
+   or edges align with the sheet centre, quarter lines, or other tiles.
+   ========================================================================= */
+const SNAP_PX = 5;
+let activeDrag = null;
+
+function startDrag(e, kind, tileId, handle) {
+  if (e.button !== 0) return;
+  const f = findTile(tileId);
+  if (!f) return;
+  const sheetEl = getSheetEl(f.pageIdx);
+  if (!sheetEl) return;
+  const pxPerMm = sheetPxPerMm(sheetEl);
+  const scale = previewScale();
+  e.preventDefault();
+  e.stopPropagation();
+  activeDrag = {
+    kind, handle,
+    tileId, pageIdx: f.pageIdx,
+    sheetEl, pxPerMm, scale,
+    startMouseX: e.clientX,
+    startMouseY: e.clientY,
+    startTile: { ...f.tile, image: { ...f.tile.image } },
+  };
+  document.body.style.userSelect = 'none';
+  window.addEventListener('mousemove', onDragMove);
+  window.addEventListener('mouseup', onDragEnd);
+  // Add a "moving" visual class
+  const el = document.querySelector(`.tile[data-tile-id="${tileId}"]`);
+  if (el) {
+    el.classList.add(kind.includes('move') ? 'dragging' : 'resizing');
+  }
+}
+
+function onDragMove(e) {
+  const d = activeDrag;
+  if (!d) return;
+  // Convert viewport-px → mm on the sheet, accounting for the preview scale.
+  const dxPx = e.clientX - d.startMouseX;
+  const dyPx = e.clientY - d.startMouseY;
+  const dxMm = dxPx / (d.pxPerMm * d.scale);
+  const dyMm = dyPx / (d.pxPerMm * d.scale);
+  const shift = e.shiftKey;
+  const alt = e.altKey;
+
+  const f = findTile(d.tileId);
+  if (!f) return;
+  const tile = f.tile;
+  const start = d.startTile;
+  const sheet = sheetSizeMm();
+
+  // Reset all snap guides on this sheet
+  d.sheetEl.querySelectorAll('.snap-guide').forEach(g => g.classList.remove('active'));
+
+  if (d.kind === 'tile-move') {
+    let nx = start.x + dxMm;
+    let ny = start.y + dyMm;
+    // Constrain to sheet bounds (allow some slack at the edges)
+    nx = clamp(nx, 0, sheet.w - 5);
+    ny = clamp(ny, 0, sheet.h - 5);
+    // Snap horizontal and vertical
+    const snapped = applyTileSnap(d.pageIdx, d.tileId, nx, ny, start.w, start.h);
+    nx = snapped.x; ny = snapped.y;
+    tile.x = round1(nx);
+    tile.y = round1(ny);
+    drawDragReadout(d.sheetEl, e, `${Math.round(tile.x)}, ${Math.round(tile.y)} mm`);
+  } else if (d.kind === 'tile-resize') {
+    let left = start.x, top = start.y;
+    let right = start.x + start.w, bottom = start.y + start.h;
+    const dir = d.handle;
+    if (dir.includes('w')) left   = start.x + dxMm;
+    if (dir.includes('e')) right  = start.x + start.w + dxMm;
+    if (dir.includes('n')) top    = start.y + dyMm;
+    if (dir.includes('s')) bottom = start.y + start.h + dyMm;
+    const MIN = 20;
+    if (right - left < MIN) {
+      if (dir.includes('w')) left = right - MIN; else right = left + MIN;
+    }
+    if (bottom - top < MIN) {
+      if (dir.includes('n')) top = bottom - MIN; else bottom = top + MIN;
+    }
+    let w = right - left, h = bottom - top;
+    const aspect = start.w / Math.max(1, start.h);
+    if (shift) {
+      // Keep proportions — match whichever axis grew more
+      const isCorner = dir.length === 2;
+      let useW;
+      if (isCorner) useW = (Math.abs(w - start.w) > Math.abs(h - start.h));
+      else useW = (dir === 'e' || dir === 'w');
+      if (useW) h = w / aspect; else w = h * aspect;
+      if (!alt) {
+        if (dir.includes('w')) left = right - w; else right = left + w;
+        if (dir.includes('n')) top = bottom - h; else bottom = top + h;
+      }
+    }
+    if (alt) {
+      const cx = start.x + start.w / 2;
+      const cy = start.y + start.h / 2;
+      left = cx - w / 2; right = cx + w / 2;
+      top = cy - h / 2; bottom = cy + h / 2;
+    }
+    tile.x = round1(clamp(left, -50, sheet.w + 50));
+    tile.y = round1(clamp(top, -50, sheet.h + 50));
+    tile.w = round1(Math.max(MIN, right - left));
+    tile.h = round1(Math.max(MIN, bottom - top));
+    drawDragReadout(d.sheetEl, e, `${Math.round(tile.w)} × ${Math.round(tile.h)} mm` + (shift ? ' · proportional' : '') + (alt ? ' · from centre' : ''));
+  } else if (d.kind === 'image-move') {
+    // Image inside the tile is centred via flexbox. There's no offset model
+    // (we keep it simple — pasted images sit centred). "Moving" the image
+    // toggles its placement (above/below text) if dragged past the text.
+    // For now, we just allow toggling on a meaningful upward / downward drag.
+    if (dyMm < -8 && tile.image.placement !== 'above') {
+      tile.image.placement = 'above';
+    } else if (dyMm > 8 && tile.image.placement !== 'below') {
+      tile.image.placement = 'below';
+    }
+    drawDragReadout(d.sheetEl, e, 'placement: ' + tile.image.placement);
+  } else if (d.kind === 'image-resize') {
+    // The image width is a fraction (0..1) of the tile body width.
+    // Compute the body's width in mm, then turn the new image width into
+    // a scale.
+    const bodyEl = document.querySelector(`.tile[data-tile-id="${d.tileId}"] .tile-body`);
+    if (!bodyEl) return;
+    const bodyWidthMm = bodyEl.getBoundingClientRect().width / (d.pxPerMm * d.scale);
+    let widthMm = bodyWidthMm * start.image.scale;
+    const dir = d.handle;
+    // Use horizontal change for left/right handles, vertical → keep
+    // proportional (images are intrinsically aspect-locked).
+    let delta = 0;
+    if (dir.includes('e')) delta = dxMm;
+    else if (dir.includes('w')) delta = -dxMm;
+    else delta = dyMm; // top/bottom handles still change height visually
+    widthMm = clamp(widthMm + delta, bodyWidthMm * 0.1, bodyWidthMm);
+    tile.image.scale = clamp(widthMm / bodyWidthMm, 0.10, 1.0);
+    drawDragReadout(d.sheetEl, e, Math.round(tile.image.scale * 100) + '% of tile width' + (shift ? ' · proportional (default for images)' : ''));
+  }
+
+  // Live-update the DOM without a full re-render
+  liveUpdateTileEl(tile);
+}
+
+function onDragEnd() {
+  if (!activeDrag) return;
+  const d = activeDrag;
+  document.body.style.userSelect = '';
+  window.removeEventListener('mousemove', onDragMove);
+  window.removeEventListener('mouseup', onDragEnd);
+  d.sheetEl.querySelectorAll('.snap-guide').forEach(g => g.classList.remove('active'));
+  const ro = d.sheetEl.querySelector('.drag-readout');
+  if (ro) ro.classList.remove('active');
+  const el = document.querySelector(`.tile[data-tile-id="${d.tileId}"]`);
+  if (el) el.classList.remove('dragging', 'resizing');
+  persist();
+  activeDrag = null;
+  // Refresh the inspector readouts for the geometry that just changed
+  renderInspector();
+}
+
+function round1(n) { return Math.round(n * 10) / 10; }
+
+/* Live-update the DOM for one tile without a full re-render — used while
+   dragging so the cursor stays glued to the moving / resizing tile. */
+function liveUpdateTileEl(tile) {
+  const el = document.querySelector(`.tile[data-tile-id="${tile.id}"]`);
+  if (!el) return;
+  el.style.left = tile.x + 'mm';
+  el.style.top = tile.y + 'mm';
+  el.style.width = tile.w + 'mm';
+  el.style.height = tile.h + 'mm';
+  const body = el.querySelector('.tile-body');
+  if (body) body.dataset.placement = tile.image.placement;
+  const wrap = el.querySelector('.tile-image-wrap');
+  if (wrap) wrap.style.width = Math.round(tile.image.scale * 100) + '%';
+}
+
+/* Snap a moving tile's coordinates to:
+     • the sheet's vertical and horizontal centre lines
+     • the quarter lines (25%, 75%)
+     • the safe-zone edges
+     • any other tile's edges or centre
+   Within SNAP_PX (translated to mm) we snap and show the matching guide. */
+function applyTileSnap(pageIdx, movingTileId, nx, ny, w, h) {
+  const sheet = sheetSizeMm();
+  const sheetEl = getSheetEl(pageIdx);
+  const pxPerMm = sheetPxPerMm(sheetEl);
+  const scale = previewScale();
+  const snapMm = SNAP_PX / (pxPerMm * scale);
+
+  const candidatesX = [
+    { v: sheet.w / 2, kind: 'center' },
+    { v: PAGE_MARGIN_MM, kind: 'edge' },
+    { v: sheet.w - PAGE_MARGIN_MM, kind: 'edge' },
+    { v: sheet.w * 0.25, kind: 'quarter' },
+    { v: sheet.w * 0.75, kind: 'quarter' },
+  ];
+  const candidatesY = [
+    { v: sheet.h / 2, kind: 'center' },
+    { v: PAGE_MARGIN_MM, kind: 'edge' },
+    { v: sheet.h - PAGE_MARGIN_MM, kind: 'edge' },
+    { v: sheet.h * 0.25, kind: 'quarter' },
+    { v: sheet.h * 0.75, kind: 'quarter' },
+  ];
+  // Other tiles' edges + centres
+  state.pages[pageIdx].tiles.forEach(t => {
+    if (t.id === movingTileId) return;
+    candidatesX.push({ v: t.x, kind: 'tile' });
+    candidatesX.push({ v: t.x + t.w, kind: 'tile' });
+    candidatesX.push({ v: t.x + t.w / 2, kind: 'tile' });
+    candidatesY.push({ v: t.y, kind: 'tile' });
+    candidatesY.push({ v: t.y + t.h, kind: 'tile' });
+    candidatesY.push({ v: t.y + t.h / 2, kind: 'tile' });
+  });
+
+  // What "lines" can the moving tile align? its left, centre, and right.
+  const myXs = [
+    { mine: 'left',   v: nx },
+    { mine: 'center', v: nx + w / 2 },
+    { mine: 'right',  v: nx + w },
+  ];
+  const myYs = [
+    { mine: 'top',    v: ny },
+    { mine: 'center', v: ny + h / 2 },
+    { mine: 'bottom', v: ny + h },
+  ];
+
+  // Find the smallest snap distance for X
+  let bestX = null;
+  for (const target of candidatesX) {
+    for (const mine of myXs) {
+      const diff = target.v - mine.v;
+      if (Math.abs(diff) < snapMm && (!bestX || Math.abs(diff) < Math.abs(bestX.diff))) {
+        bestX = { diff, target, mine };
+      }
+    }
+  }
+  let bestY = null;
+  for (const target of candidatesY) {
+    for (const mine of myYs) {
+      const diff = target.v - mine.v;
+      if (Math.abs(diff) < snapMm && (!bestY || Math.abs(diff) < Math.abs(bestY.diff))) {
+        bestY = { diff, target, mine };
+      }
+    }
+  }
+  if (bestX) {
+    nx += bestX.diff;
+    showSnapGuide(sheetEl, 'v', bestX.target.v, bestX.target.kind === 'center');
+  }
+  if (bestY) {
+    ny += bestY.diff;
+    showSnapGuide(sheetEl, 'h', bestY.target.v, bestY.target.kind === 'center');
+  }
+  return { x: nx, y: ny };
+}
+
+let nextGuideIdx = 0;
+function showSnapGuide(sheetEl, orientation, valueMm, isCenter) {
+  const guides = sheetEl.querySelectorAll('.snap-guide');
+  // Round-robin through the pool so multiple guides can show simultaneously.
+  const g = guides[nextGuideIdx % guides.length];
+  nextGuideIdx++;
+  g.className = 'snap-guide ' + orientation + (isCenter ? ' center' : '') + ' active';
+  if (orientation === 'v') {
+    g.style.left = valueMm + 'mm';
+    g.style.top = '0';
+    g.style.height = '100%';
+    g.style.width = '1px';
+  } else {
+    g.style.top = valueMm + 'mm';
+    g.style.left = '0';
+    g.style.width = '100%';
+    g.style.height = '1px';
+  }
+}
+
+function drawDragReadout(sheetEl, e, text) {
+  const ro = sheetEl.querySelector('.drag-readout');
+  if (!ro) return;
+  const sheetRect = sheetEl.getBoundingClientRect();
+  ro.style.left = ((e.clientX - sheetRect.left) / previewScale() + 12) + 'px';
+  ro.style.top  = ((e.clientY - sheetRect.top)  / previewScale() + 12) + 'px';
+  ro.textContent = text;
+  ro.classList.add('active');
+}
+
+/* =========================================================================
+   INSPECTOR  (floating panel for the selected tile)
+   ========================================================================= */
+function renderInspector() {
+  const insp = document.getElementById('inspector');
+  const tile = state.selectedTileId ? findTile(state.selectedTileId) : null;
+  if (!tile) {
+    insp.classList.remove('open');
+    return;
+  }
+  insp.classList.add('open');
+
+  // Colour grid
+  const grid = document.getElementById('colourGrid');
+  grid.innerHTML = '';
+  TILE_COLOURS.forEach(c => {
+    const chip = document.createElement('div');
+    chip.className = 'colour-chip' + (tile.tile.color === c ? ' active' : '');
+    chip.style.background = c;
+    if (c === '#FFFFFF') chip.style.border = '2px solid #DDD';
+    chip.title = c;
+    chip.addEventListener('click', () => {
+      updateTile(tile.tile.id, { color: c });
+      renderAll();
+    });
+    grid.appendChild(chip);
+  });
+
+  // Image zone
+  const zone = document.getElementById('imageZone');
+  const placeRow = document.getElementById('imagePlacementRow');
+  const sizeRow = document.getElementById('imageSizeRow');
+  const removeBtn = document.getElementById('removeImageBtn');
+  zone.innerHTML = '';
+  if (tile.tile.image.dataUrl) {
+    const img = document.createElement('img');
+    img.src = tile.tile.image.dataUrl;
+    img.alt = '';
+    zone.appendChild(img);
+    placeRow.style.display = 'flex';
+    sizeRow.style.display = 'grid';
+    removeBtn.style.display = 'inline-flex';
+    // Highlight current placement button
+    placeRow.querySelectorAll('[data-place]').forEach(b => {
+      b.classList.toggle('active', b.dataset.place === tile.tile.image.placement);
+    });
+    const slider = document.getElementById('imageScaleSlider');
+    const read = document.getElementById('imageScaleRead');
+    slider.value = Math.round(tile.tile.image.scale * 100);
+    read.textContent = slider.value + '%';
+  } else {
+    zone.textContent = '📷 Click here, then paste a picture (Ctrl+V / ⌘+V) — or drop one';
+    placeRow.style.display = 'none';
+    sizeRow.style.display = 'none';
+    removeBtn.style.display = 'none';
+  }
+
+  // Geometry sliders
+  const sheet = sheetSizeMm();
+  const wSlider = document.getElementById('tileWidthSlider');
+  const wRead = document.getElementById('tileWidthRead');
+  const hSlider = document.getElementById('tileHeightSlider');
+  const hRead = document.getElementById('tileHeightRead');
+  wSlider.min = '20'; wSlider.max = String(Math.round(sheet.w));
+  hSlider.min = '20'; hSlider.max = String(Math.round(sheet.h));
+  wSlider.value = String(Math.round(tile.tile.w));
+  hSlider.value = String(Math.round(tile.tile.h));
+  wRead.textContent = Math.round(tile.tile.w) + ' mm';
+  hRead.textContent = Math.round(tile.tile.h) + ' mm';
+}
+
+/* =========================================================================
+   RICH TEXT TOOLBAR
+   -------------------------------------------------------------------------
+   execCommand is deprecated but every browser still implements it for
+   contenteditable, and it round-trips through innerHTML cleanly. We use
+   it for the basic Bold / Italic / Underline / font / colour / list
+   commands. The A+ / A- buttons step through 7 size levels AND lift the
+   chosen size onto any <li> in the selection so bullets/numbers scale.
+   ========================================================================= */
+let lastFocusedText = null;
+function getActiveTileTextEl() {
+  if (lastFocusedText && document.contains(lastFocusedText)) return lastFocusedText;
+  if (state.selectedTileId) {
+    return document.querySelector(`.tile-text[data-tile-id="${state.selectedTileId}"]`);
+  }
+  return null;
+}
+
+function rtExec(cmd, value) {
+  const el = getActiveTileTextEl();
+  if (!el) return;
+  el.focus();
+  try {
+    document.execCommand('styleWithCSS', false, false);
+    document.execCommand(cmd, false, value);
+  } catch (_) {}
+  // Sync HTML back to model
+  syncTileTextFromDom(el);
+}
+
+function syncTileTextFromDom(el) {
+  const tileId = el.dataset.tileId;
+  if (!tileId) return;
+  updateTile(tileId, { html: el.innerHTML });
+}
+
+function bumpTextSize(delta) {
+  const el = getActiveTileTextEl();
+  if (!el) return;
+  el.focus();
+  const tileId = el.dataset.tileId;
+  const f = findTile(tileId);
+  if (!f) return;
+  // Find selection — if collapsed inside this editable, select all
+  const sel = window.getSelection();
+  let lisInSelection = [];
+  let hasSelection = false;
+  if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+    const range = sel.getRangeAt(0);
+    hasSelection = el.contains(range.startContainer) && el.contains(range.endContainer);
+    if (hasSelection) {
+      lisInSelection = Array.from(el.querySelectorAll('li'))
+        .filter(li => range.intersectsNode(li));
+    }
+  }
+  if (!hasSelection) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    lisInSelection = Array.from(el.querySelectorAll('li'));
+  }
+
+  // Bump per-tile step. If the selection is "everything in the tile", we
+  // also persist the new step on the tile so the body's --tile-font scales.
+  const newStep = clamp((f.tile.fontStep || 3) + delta, 1, 7);
+  const STEP_TO_EM = { 1: 0.66, 2: 0.82, 3: 1.0, 4: 1.18, 5: 1.4, 6: 1.7, 7: 2.0 };
+  const targetEm = STEP_TO_EM[newStep];
+  try {
+    document.execCommand('styleWithCSS', false, false);
+    document.execCommand('fontSize', false, String(newStep));
+  } catch (_) {}
+  // Lift the chosen size onto every <li> so bullet/number markers scale too.
+  lisInSelection.forEach(li => { li.style.fontSize = targetEm + 'em'; });
+  // If the selection covered everything in a list, push the size onto the
+  // parent <ul>/<ol> too so new items inherit it.
+  const lists = new Set();
+  lisInSelection.forEach(li => {
+    const p = li.parentElement;
+    if (p && (p.tagName === 'UL' || p.tagName === 'OL')) lists.add(p);
+  });
+  lists.forEach(list => {
+    const items = list.querySelectorAll(':scope > li');
+    let allCovered = items.length > 0;
+    items.forEach(li => { if (!lisInSelection.includes(li)) allCovered = false; });
+    if (allCovered) list.style.fontSize = targetEm + 'em';
+  });
+
+  // Persist the new fontStep on the tile model and sync HTML.
+  updateTile(tileId, { fontStep: newStep, html: el.innerHTML });
+  // Quick visual feedback so the user knows the level changed
+  toast('Text size: ' + (['', 'tiny', 'small', 'normal', 'big', 'bigger', 'huge', 'giant'][newStep]));
+}
+
+/* =========================================================================
+   IMAGE HANDLING
+   ========================================================================= */
+function attachImageToTile(tileId, dataUrl) {
+  const f = findTile(tileId);
+  if (!f) return;
+  const existing = f.tile.image.dataUrl;
+  if (existing && !confirm('Replace the existing picture in this tile?')) return;
+  f.tile.image = {
+    dataUrl,
+    placement: f.tile.image.placement || 'below',
+    scale: f.tile.image.scale || 0.85,
+  };
+  persist();
+  renderAll();
+  toast('Picture added', 'success');
+}
+
+function handleImageFile(tileId, file) {
+  if (!file || !file.type || !file.type.startsWith('image/')) {
+    toast('That does not look like a picture', 'error');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => attachImageToTile(tileId, reader.result);
+  reader.onerror = () => toast('Could not read the picture', 'error');
+  reader.readAsDataURL(file);
+}
+
+/* =========================================================================
+   WIRING
+   ========================================================================= */
+function wireGlobal() {
+  // Title + subtitle
+  document.getElementById('sheetTitle').addEventListener('input', (e) => {
+    state.title = e.target.value;
+    // Update just the header text without rebuilding the whole sheet
+    const titleEl = document.querySelector('.sheet-header-title');
+    if (titleEl) titleEl.textContent = state.title;
+    persist();
+  });
+  document.getElementById('sheetSubtitle').addEventListener('input', (e) => {
+    state.subtitle = e.target.value;
+    const subEl = document.querySelector('.sheet-header-subtitle');
+    if (subEl) subEl.textContent = state.subtitle;
+    persist();
+  });
+  // Page size + orientation
+  document.getElementById('pageSizeSelect').addEventListener('change', (e) => {
+    state.pageSizeId = e.target.value;
+    persist();
+    renderAll();
+  });
+  document.getElementById('pageOrientSelect').addEventListener('change', (e) => {
+    state.orientation = e.target.value;
+    persist();
+    renderAll();
+  });
+  // Footer toggles
+  document.getElementById('showLogoChk').addEventListener('change', (e) => {
+    state.showLogo = e.target.checked;
+    persist();
+    renderAll();
+  });
+  document.getElementById('showCopyChk').addEventListener('change', (e) => {
+    state.showCopyright = e.target.checked;
+    persist();
+    renderAll();
+  });
+  // Add tile / add page / delete page
+  document.getElementById('addTileBtn').addEventListener('click', () => addTile());
+  document.getElementById('addPageBtn').addEventListener('click', () => {
+    state.pages.push(makeEmptyPage());
+    persist();
+    renderAll();
+  });
+  document.getElementById('deletePageBtn').addEventListener('click', () => {
+    if (state.pages.length <= 1) return;
+    if (!confirm('Delete the last page (and all tiles on it)?')) return;
+    state.pages.pop();
+    persist();
+    renderAll();
+  });
+  // Print
+  document.getElementById('printBtn').addEventListener('click', () => {
+    applyPagePrintRule();
+    setTimeout(() => window.print(), 80);
+  });
+  // Clear all
+  document.getElementById('clearAllBtn').addEventListener('click', () => {
+    if (!confirm('Clear the whole cheatsheet? This cannot be undone.')) return;
+    state.pages = [makeEmptyPage()];
+    state.selectedTileId = null;
+    state.selectedImageTileId = null;
+    persist();
+    renderAll();
+    toast('Cheatsheet cleared');
+  });
+  // Export / import JSON
+  document.getElementById('exportJsonBtn').addEventListener('click', exportJson);
+  document.getElementById('importJsonBtn').addEventListener('click', () =>
+    document.getElementById('importJsonInput').click());
+  document.getElementById('importJsonInput').addEventListener('change', importJson);
+
+  // Window resize → re-fit
+  window.addEventListener('resize', () => fitSheetToViewport());
+
+  // Click anywhere outside a tile or inspector → deselect
+  document.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.tile')) return;
+    if (e.target.closest('.inspector')) return;
+    if (e.target.closest('.tile-handle')) return;
+    state.selectedTileId = null;
+    state.selectedImageTileId = null;
+    renderInspector();
+    // Just refresh selection highlight without rebuilding all DOM
+    document.querySelectorAll('.tile.selected').forEach(el => el.classList.remove('selected'));
+    document.querySelectorAll('.tile-image-wrap.image-selected').forEach(el => el.classList.remove('image-selected'));
+  });
+
+  // Global mousedown to start drag/resize where needed (delegated)
+  document.addEventListener('mousedown', onSheetMouseDown);
+
+  // Inspector close
+  document.getElementById('inspectorClose').addEventListener('click', () => {
+    state.selectedTileId = null;
+    renderAll();
+  });
+  document.getElementById('deleteTileBtn').addEventListener('click', () => {
+    if (state.selectedTileId) deleteTile(state.selectedTileId);
+  });
+  document.getElementById('duplicateTileBtn').addEventListener('click', () => {
+    if (state.selectedTileId) duplicateTile(state.selectedTileId);
+  });
+  // Geometry sliders
+  document.getElementById('tileWidthSlider').addEventListener('input', (e) => {
+    if (!state.selectedTileId) return;
+    const tile = findTile(state.selectedTileId).tile;
+    tile.w = +e.target.value;
+    document.getElementById('tileWidthRead').textContent = tile.w + ' mm';
+    liveUpdateTileEl(tile);
+  });
+  document.getElementById('tileWidthSlider').addEventListener('change', persist);
+  document.getElementById('tileHeightSlider').addEventListener('input', (e) => {
+    if (!state.selectedTileId) return;
+    const tile = findTile(state.selectedTileId).tile;
+    tile.h = +e.target.value;
+    document.getElementById('tileHeightRead').textContent = tile.h + ' mm';
+    liveUpdateTileEl(tile);
+  });
+  document.getElementById('tileHeightSlider').addEventListener('change', persist);
+
+  // Image placement buttons
+  document.querySelectorAll('#imagePlacementRow [data-place]').forEach(b => {
+    b.addEventListener('click', () => {
+      if (!state.selectedTileId) return;
+      const tile = findTile(state.selectedTileId).tile;
+      tile.image.placement = b.dataset.place;
+      persist();
+      renderAll();
+    });
+  });
+  // Image scale slider
+  const imgScale = document.getElementById('imageScaleSlider');
+  imgScale.addEventListener('input', () => {
+    if (!state.selectedTileId) return;
+    const tile = findTile(state.selectedTileId).tile;
+    tile.image.scale = +imgScale.value / 100;
+    document.getElementById('imageScaleRead').textContent = imgScale.value + '%';
+    const wrap = document.querySelector(`.tile[data-tile-id="${tile.id}"] .tile-image-wrap`);
+    if (wrap) wrap.style.width = imgScale.value + '%';
+  });
+  imgScale.addEventListener('change', persist);
+  document.getElementById('removeImageBtn').addEventListener('click', () => {
+    if (!state.selectedTileId) return;
+    if (!confirm('Remove the picture from this tile?')) return;
+    const tile = findTile(state.selectedTileId).tile;
+    tile.image = { dataUrl: '', placement: 'below', scale: 0.85 };
+    persist();
+    renderAll();
+  });
+
+  // Image zone (paste / drop / browse)
+  const zone = document.getElementById('imageZone');
+  zone.addEventListener('click', () => zone.focus());
+  zone.addEventListener('paste', (e) => {
+    if (!state.selectedTileId) return;
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (const it of items) {
+      if (it.type && it.type.startsWith('image/')) {
+        e.preventDefault();
+        handleImageFile(state.selectedTileId, it.getAsFile());
+        return;
+      }
+    }
+  });
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    if (!state.selectedTileId) return;
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) handleImageFile(state.selectedTileId, file);
+  });
+  // Double-click to open a file picker
+  zone.addEventListener('dblclick', () => {
+    if (!state.selectedTileId) return;
+    const input = document.getElementById('hiddenImageInput');
+    input.dataset.tileId = state.selectedTileId;
+    input.value = '';
+    input.click();
+  });
+  document.getElementById('hiddenImageInput').addEventListener('change', (e) => {
+    const tileId = e.target.dataset.tileId;
+    const file = e.target.files && e.target.files[0];
+    if (tileId && file) handleImageFile(tileId, file);
+  });
+
+  // Rich-text toolbar
+  document.querySelectorAll('.rt-btn[data-cmd]').forEach(b => {
+    b.addEventListener('mousedown', (e) => e.preventDefault()); // keep editor focus
+    b.addEventListener('click', () => rtExec(b.dataset.cmd));
+  });
+  document.querySelectorAll('.rt-btn[data-action]').forEach(b => {
+    b.addEventListener('mousedown', (e) => e.preventDefault());
+    b.addEventListener('click', () => {
+      const a = b.dataset.action;
+      if (a === 'text-bigger')  bumpTextSize(+1);
+      else if (a === 'text-smaller') bumpTextSize(-1);
+    });
+  });
+  document.querySelectorAll('.rt-select[data-cmd]').forEach(s => {
+    s.addEventListener('change', () => rtExec(s.dataset.cmd, s.value));
+  });
+  document.querySelectorAll('.rt-color[data-cmd]').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const cmd = inp.dataset.cmd;
+      // Browsers differ on highlight command name; try both.
+      if (cmd === 'hiliteColor') {
+        const ok = document.execCommand('hiliteColor', false, inp.value);
+        if (!ok) rtExec('backColor', inp.value);
+        else { const el = getActiveTileTextEl(); if (el) syncTileTextFromDom(el); }
+      } else {
+        rtExec(cmd, inp.value);
+      }
+    });
+  });
+
+  // Listen for paste at the document level so pasting a screenshot
+  // anywhere routes into the selected tile.
+  document.addEventListener('paste', (e) => {
+    if (!state.selectedTileId) return;
+    // If the target is inside a tile-text, let it paste text/HTML normally.
+    const t = e.target;
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (const it of items) {
+      if (it.type && it.type.startsWith('image/')) {
+        // Always route image paste into the selected tile's image slot.
+        e.preventDefault();
+        handleImageFile(state.selectedTileId, it.getAsFile());
+        return;
+      }
+    }
+  });
+
+  // Keyboard: arrows nudge selected tile / image; Delete removes tile; Esc deselects
+  document.addEventListener('keydown', (e) => {
+    const t = e.target;
+    if (t && (t.matches('input, textarea, select') || t.isContentEditable)) return;
+    if (!state.selectedTileId) return;
+    const tile = findTile(state.selectedTileId).tile;
+    const step = e.shiftKey ? 5 : 1;
+    let handled = false;
+    if (e.key === 'ArrowLeft')  { tile.x -= step; handled = true; }
+    if (e.key === 'ArrowRight') { tile.x += step; handled = true; }
+    if (e.key === 'ArrowUp')    { tile.y -= step; handled = true; }
+    if (e.key === 'ArrowDown')  { tile.y += step; handled = true; }
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      deleteTile(state.selectedTileId);
+      handled = true;
+    }
+    if (e.key === 'Escape') {
+      state.selectedTileId = null; state.selectedImageTileId = null;
+      renderAll(); handled = true;
+    }
+    if (handled) {
+      e.preventDefault();
+      liveUpdateTileEl(tile);
+      persist();
+    }
+  });
+
+  // Track focus on tile-text elements so toolbar knows which one to act on
+  document.addEventListener('focusin', (e) => {
+    if (e.target.classList && e.target.classList.contains('tile-text')) {
+      lastFocusedText = e.target;
+      const tileId = e.target.dataset.tileId;
+      if (tileId && state.selectedTileId !== tileId) {
+        state.selectedTileId = tileId;
+        state.selectedImageTileId = null;
+        // Refresh just the selection highlight + inspector, no full re-render
+        document.querySelectorAll('.tile.selected').forEach(el => el.classList.remove('selected'));
+        const tileEl = document.querySelector(`.tile[data-tile-id="${tileId}"]`);
+        if (tileEl) tileEl.classList.add('selected');
+        renderInspector();
+      }
+    }
+  });
+
+  // tile-text inputs flow back to model
+  document.addEventListener('input', (e) => {
+    if (e.target.classList && e.target.classList.contains('tile-text')) {
+      syncTileTextFromDom(e.target);
+    }
+  });
+
+  // Header strip mini buttons (delegated)
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tile-mini-btn');
+    if (!btn) return;
+    const tileEl = btn.closest('.tile');
+    if (!tileEl) return;
+    const tileId = tileEl.dataset.tileId;
+    const action = btn.dataset.action;
+    if (action === 'delete') deleteTile(tileId);
+    else if (action === 'duplicate') duplicateTile(tileId);
+  });
+}
+
+/* Decide what gesture a mousedown on the workspace should start: tile-move
+   when the user grabs the header strip or empty body, tile-resize when
+   they grab a tile handle, image-move/resize when they're inside the image.
+   The text area itself swallows clicks (lets the user type). */
+function onSheetMouseDown(e) {
+  if (e.button !== 0) return;
+  if (e.target.closest('.inspector')) return;
+  if (e.target.closest('.tile-mini-btn')) return;
+  // Tile handle?
+  const handle = e.target.closest('.tile-handle');
+  if (handle) {
+    const tileId = handle.dataset.tileId;
+    selectTile(tileId);
+    startDrag(e, 'tile-resize', tileId, handle.dataset.handle);
+    return;
+  }
+  // Image handle?
+  const imgHandle = e.target.closest('.tile-image-handle');
+  if (imgHandle) {
+    const tileId = imgHandle.dataset.tileId;
+    selectImageInTile(tileId);
+    startDrag(e, 'image-resize', tileId, imgHandle.dataset.handle);
+    return;
+  }
+  // Image shield (drag image to toggle placement)
+  const shield = e.target.closest('.tile-image-shield');
+  if (shield) {
+    const tileId = shield.dataset.tileId;
+    selectImageInTile(tileId);
+    startDrag(e, 'image-move', tileId, null);
+    return;
+  }
+  // Tile header (drag the tile)
+  const tileHeader = e.target.closest('.tile-header');
+  if (tileHeader) {
+    const tileId = tileHeader.closest('.tile').dataset.tileId;
+    selectTile(tileId);
+    startDrag(e, 'tile-move', tileId, null);
+    return;
+  }
+  // Plain click on a tile body (not text) selects the tile
+  const tileEl = e.target.closest('.tile');
+  if (tileEl) {
+    const tileId = tileEl.dataset.tileId;
+    // Don't take focus away from typing
+    if (!e.target.closest('.tile-text')) {
+      selectTile(tileId);
+    } else {
+      // Selecting via text focus is handled by focusin
+    }
+  }
+}
+
+/* =========================================================================
+   IMPORT / EXPORT
+   ========================================================================= */
+function exportJson() {
+  const payload = {
+    polymathCheatsheetVersion: 1,
+    exportedAt: new Date().toISOString(),
+    state: {
+      title: state.title,
+      subtitle: state.subtitle,
+      pageSizeId: state.pageSizeId,
+      orientation: state.orientation,
+      showLogo: state.showLogo,
+      showCopyright: state.showCopyright,
+      pages: state.pages,
+    },
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = (state.title || 'cheatsheet').replace(/[^a-z0-9_-]+/gi, '_').toLowerCase() + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  toast('Cheatsheet exported', 'success');
+}
+
+function importJson(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const parsed = JSON.parse(reader.result);
+      const s = parsed.state || parsed;
+      if (!s || !Array.isArray(s.pages)) throw new Error('Not a cheatsheet file');
+      if (state.pages.some(p => p.tiles.length > 0)) {
+        if (!confirm('Replace the current cheatsheet with the imported one?')) return;
+      }
+      state.title = s.title || 'Imported cheatsheet';
+      state.subtitle = s.subtitle || '';
+      state.pageSizeId = PAGE_SIZES[s.pageSizeId] ? s.pageSizeId : 'a4';
+      state.orientation = s.orientation === 'landscape' ? 'landscape' : 'portrait';
+      state.showLogo = s.showLogo !== false;
+      state.showCopyright = s.showCopyright !== false;
+      state.pages = s.pages.map(upgradePage);
+      state.selectedTileId = null;
+      persist();
+      renderAll();
+      toast('Cheatsheet imported', 'success');
+    } catch (err) {
+      toast('Could not import: ' + err.message, 'error');
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+
+/* =========================================================================
+   STARTER TEMPLATE — runs only on first visit
+   -------------------------------------------------------------------------
+   Drops a handful of example tiles on page 1 so the user sees what the app
+   can do, instead of staring at a blank sheet.
+   ========================================================================= */
+function seedStarter() {
+  state.title = 'P5 Fractions Cheatsheet';
+  state.subtitle = 'Quick reference for adding, subtracting, multiplying & dividing fractions';
+  state.pages = [makeEmptyPage()];
+  const t1 = makeTile(0);
+  t1.x = 10; t1.y = 35; t1.w = 90; t1.h = 50;
+  t1.color = '#FFF3E0';
+  t1.html = '<b>Adding fractions</b><p>1. Make the denominators the same.<br>2. Add the numerators.<br>3. Simplify if possible.</p>';
+  const t2 = makeTile(0);
+  t2.x = 110; t2.y = 35; t2.w = 90; t2.h = 50;
+  t2.color = '#E3F2FD';
+  t2.html = '<b>Subtracting fractions</b><p>Same idea as adding — denominators must match first, then subtract the numerators.</p>';
+  const t3 = makeTile(0);
+  t3.x = 10; t3.y = 95; t3.w = 90; t3.h = 60;
+  t3.color = '#F1F8E9';
+  t3.html = '<b>Multiplying fractions</b><ol><li>Multiply the numerators.</li><li>Multiply the denominators.</li><li>Simplify.</li></ol>';
+  const t4 = makeTile(0);
+  t4.x = 110; t4.y = 95; t4.w = 90; t4.h = 60;
+  t4.color = '#F3E5F5';
+  t4.html = '<b>Dividing fractions</b><p>Keep · Change · Flip</p><ul><li>Keep the first fraction</li><li>Change ÷ to ×</li><li>Flip the second fraction</li></ul>';
+  const t5 = makeTile(0);
+  t5.x = 10; t5.y = 165; t5.w = 190; t5.h = 40;
+  t5.color = '#FFF9C4';
+  t5.html = '<b>Mixed numbers ↔ Improper fractions</b><p>Mixed → Improper: <i>(whole × denom) + num</i> over denom.<br>Improper → Mixed: divide num by denom; remainder is the new numerator.</p>';
+  state.pages[0].tiles.push(t1, t2, t3, t4, t5);
+}
+
+/* =========================================================================
+   INIT
+   ========================================================================= */
+function init() {
+  if (!loadFromStorage()) {
+    seedStarter();
+    persist();
+  }
+  wireGlobal();
+  renderAll();
+}
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
