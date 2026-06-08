@@ -422,64 +422,76 @@
   .tile.dragging { transition: none; opacity: 0.85; cursor: grabbing; }
   .tile.resizing { transition: none; }
 
+  /* TILE HEADER — a single bar that holds the editable title, doubles as the
+     drag handle, and shows the action buttons. Its background is a vibrant
+     shade of the tile's own colour. */
   .tile-header {
-    height: 18px; flex-shrink: 0;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 4px;
-    background: rgba(0,0,0,0.04);
+    flex-shrink: 0;
+    display: flex; align-items: center; gap: 4px;
+    padding: 2px 4px 2px 5px;
+    min-height: 20px;
+    background: var(--tile-header-bg, rgba(0,0,0,0.06));
     border-bottom: 1px solid var(--tile-border, #DDD);
     border-radius: 3px 3px 0 0;
-    font-size: 0.6rem;
-    color: var(--text-soft);
+    color: var(--text-dark);
     cursor: move;
     user-select: none;
+  }
+  .tile-header-grip {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    line-height: 1;
+    color: var(--text-soft);
     opacity: 0;
+    cursor: move;
     transition: opacity var(--transition-fast);
   }
-  .tile:hover .tile-header,
-  .tile.selected .tile-header { opacity: 1; }
-  .tile-header-tag {
-    font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
-    padding-left: 4px;
-  }
-  .tile-header-actions { display: flex; gap: 2px; }
-  .tile-mini-btn {
-    width: 14px; height: 14px;
-    display: inline-flex; align-items: center; justify-content: center;
-    border-radius: 3px;
-    color: var(--text-soft);
-    font-size: 0.7rem; line-height: 1;
-    transition: background var(--transition-fast), color var(--transition-fast);
-  }
-  .tile-mini-btn:hover { background: rgba(0,0,0,0.08); color: var(--text-dark); }
-  .tile-mini-btn.danger:hover { background: var(--danger-bg); color: var(--danger-strong); }
+  .tile:hover .tile-header-grip,
+  .tile.selected .tile-header-grip { opacity: 0.85; }
 
-  /* TILE SUBHEADER — an editable title bar shown at the top of the tile.
-     Its background is a slightly darker shade of the tile's own colour. */
-  .tile-subheader {
-    flex-shrink: 0;
-    padding: 3px 10px;
+  /* Editable title fills the bar. It does NOT trigger dragging — clicking it
+     starts text editing instead. */
+  .tile-title {
+    flex: 1; min-width: 0;
     font-weight: 700;
-    font-size: 0.78rem;
+    font-size: 0.8rem;
     line-height: 1.25;
     color: var(--text-dark);
-    background: var(--tile-subheader-bg, rgba(0,0,0,0.06));
-    border-bottom: 1px solid var(--tile-border, #DDD);
-    border-radius: 0;
     outline: none;
-    min-height: 1.2em;
     word-break: break-word;
     overflow-wrap: anywhere;
     cursor: text;
+    border-radius: 2px;
+    padding: 1px 3px;
   }
-  .tile-subheader:empty::before {
+  .tile-title:empty::before {
     content: 'Title…';
-    color: var(--text-faint);
+    color: var(--text-soft);
     font-weight: 500;
     font-style: italic;
+    opacity: 0.75;
     pointer-events: none;
   }
-  .tile-subheader:focus { box-shadow: inset 0 0 0 1px var(--accent-soft); }
+  .tile-title:focus { box-shadow: inset 0 0 0 1px var(--accent-soft); background: rgba(255,255,255,0.45); }
+
+  .tile-header-actions {
+    flex-shrink: 0;
+    display: flex; gap: 2px;
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+  }
+  .tile:hover .tile-header-actions,
+  .tile.selected .tile-header-actions { opacity: 1; }
+  .tile-mini-btn {
+    width: 16px; height: 16px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 3px;
+    color: var(--text-dark);
+    font-size: 0.72rem; line-height: 1;
+    transition: background var(--transition-fast), color var(--transition-fast);
+  }
+  .tile-mini-btn:hover { background: rgba(0,0,0,0.12); }
+  .tile-mini-btn.danger:hover { background: var(--danger-bg); color: var(--danger-strong); }
 
   /* TILE BODY is the positioning context for the image. The image is
      absolutely positioned in mm relative to the body, so we can drag it
@@ -1037,12 +1049,12 @@
       transition: none !important;
     }
     .tile.selected { outline: none; box-shadow: none !important; }
-    .tile-header { display: none !important; }
-    .tile-subheader.is-empty { display: none !important; }
-    .tile-subheader {
+    .tile-header.is-empty { display: none !important; }
+    .tile-header {
       print-color-adjust: exact;
       -webkit-print-color-adjust: exact;
     }
+    .tile-header-grip, .tile-header-actions { display: none !important; }
     .tile-handle, .tile-image-handle { display: none !important; }
     .tile-image-wrap.image-selected { outline: none !important; }
     .tile-body { padding: 8px 10px; }
@@ -1743,28 +1755,37 @@ function renderTile(tile, pageIdx) {
   el.style.height = tile.h + 'mm';
   el.style.setProperty('--tile-bg', tile.color);
   el.style.setProperty('--tile-border', tile.color === '#FFFFFF' ? '#D5D5D0' : darkenColour(tile.color, 0.12));
-  el.style.setProperty('--tile-subheader-bg', tile.color === '#FFFFFF' ? '#EFEFEC' : darkenColour(tile.color, 0.10));
+  el.style.setProperty('--tile-header-bg', vibrantShade(tile.color));
 
-  // Header strip
+  // Header bar — holds the editable title, doubles as the drag handle, and
+  // shows the action buttons on hover.
+  const hasTitle = (tile.subheader || '').trim();
   const header = document.createElement('div');
-  header.className = 'tile-header';
-  header.innerHTML = `
-    <span class="tile-header-tag">⋮⋮ drag</span>
-    <span class="tile-header-actions">
-      <button class="tile-mini-btn" data-action="duplicate" title="Duplicate">⎘</button>
-      <button class="tile-mini-btn danger" data-action="delete" title="Delete">✕</button>
-    </span>`;
-  el.appendChild(header);
+  header.className = 'tile-header' + (hasTitle ? '' : ' is-empty');
 
-  // Subheader — editable title bar at the top of the tile
-  const sub = document.createElement('div');
-  sub.className = 'tile-subheader' + ((tile.subheader || '').trim() ? '' : ' is-empty');
-  sub.contentEditable = 'true';
-  sub.spellcheck = false;
-  sub.dataset.tileId = tile.id;
-  sub.dataset.role = 'subheader';
-  sub.textContent = tile.subheader || '';
-  el.appendChild(sub);
+  const grip = document.createElement('span');
+  grip.className = 'tile-header-grip';
+  grip.textContent = '⋮⋮';
+  grip.title = 'Drag to move';
+
+  const title = document.createElement('div');
+  title.className = 'tile-title';
+  title.contentEditable = 'true';
+  title.spellcheck = false;
+  title.dataset.tileId = tile.id;
+  title.dataset.role = 'subheader';
+  title.textContent = tile.subheader || '';
+
+  const actions = document.createElement('span');
+  actions.className = 'tile-header-actions';
+  actions.innerHTML = `
+    <button class="tile-mini-btn" data-action="duplicate" title="Duplicate">⎘</button>
+    <button class="tile-mini-btn danger" data-action="delete" title="Delete">✕</button>`;
+
+  header.appendChild(grip);
+  header.appendChild(title);
+  header.appendChild(actions);
+  el.appendChild(header);
 
   // Body
   const body = document.createElement('div');
@@ -1840,6 +1861,32 @@ function darkenColour(hex, factor) {
   const g = parseInt(m[2], 16) * (1 - factor);
   const b = parseInt(m[3], 16) * (1 - factor);
   return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+}
+
+/* Produce a more VIBRANT shade of a (typically pastel) tile colour for the
+   header bar: push the saturation up and the lightness down a touch, so the
+   header reads as a saturated version of the tile rather than a muddy grey. */
+function vibrantShade(hex) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return '#E8E8E3';
+  let r = parseInt(m[1], 16) / 255;
+  let g = parseInt(m[2], 16) / 255;
+  let b = parseInt(m[3], 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0, l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h /= 6;
+  }
+  // Near-grey / white tiles have no hue to boost → use a soft neutral.
+  if (s < 0.05) return '#E8E8E3';
+  s = Math.min(1, s * 2.6 + 0.12);
+  l = clamp(l - 0.13, 0.62, 0.84);
+  return `hsl(${Math.round(h * 360)}, ${Math.round(s * 100)}%, ${Math.round(l * 100)}%)`;
 }
 
 function fitSheetToViewport() {
@@ -3353,7 +3400,7 @@ function wireGlobal() {
   document.addEventListener('focusin', (e) => {
     const cl = e.target.classList;
     const isText = cl && cl.contains('tile-text');
-    const isSubheader = cl && cl.contains('tile-subheader');
+    const isSubheader = cl && cl.contains('tile-title');
     if (isText || isSubheader) {
       if (isText) lastFocusedText = e.target;
       const tileId = e.target.dataset.tileId;
@@ -3370,7 +3417,7 @@ function wireGlobal() {
 
   // Keep the subheader title single-line — Enter commits instead of wrapping
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('tile-subheader')) {
+    if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('tile-title')) {
       e.preventDefault();
       e.target.blur();
     }
@@ -3379,12 +3426,13 @@ function wireGlobal() {
   document.addEventListener('input', (e) => {
     if (e.target.classList && e.target.classList.contains('tile-text')) {
       syncTileTextFromDom(e.target);
-    } else if (e.target.classList && e.target.classList.contains('tile-subheader')) {
+    } else if (e.target.classList && e.target.classList.contains('tile-title')) {
       const tileId = e.target.dataset.tileId;
       if (tileId) {
         const value = e.target.textContent;
         updateTile(tileId, { subheader: value });
-        e.target.classList.toggle('is-empty', !value.trim());
+        const header = e.target.closest('.tile-header');
+        if (header) header.classList.toggle('is-empty', !value.trim());
       }
     }
   });
@@ -3438,7 +3486,7 @@ function onSheetMouseDown(e) {
     return;
   }
   const tileHeader = e.target.closest('.tile-header');
-  if (tileHeader) {
+  if (tileHeader && !e.target.closest('.tile-title')) {
     const tileId = tileHeader.closest('.tile').dataset.tileId;
     selectTile(tileId);
     startDrag(e, 'tile-move', tileId, null);
@@ -3447,7 +3495,7 @@ function onSheetMouseDown(e) {
   const tileEl = e.target.closest('.tile');
   if (tileEl) {
     const tileId = tileEl.dataset.tileId;
-    if (!e.target.closest('.tile-text') && !e.target.closest('.tile-subheader')) {
+    if (!e.target.closest('.tile-text') && !e.target.closest('.tile-title')) {
       selectTile(tileId);
     }
   }
