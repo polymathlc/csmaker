@@ -454,6 +454,33 @@
   .tile-mini-btn:hover { background: rgba(0,0,0,0.08); color: var(--text-dark); }
   .tile-mini-btn.danger:hover { background: var(--danger-bg); color: var(--danger-strong); }
 
+  /* TILE SUBHEADER — an editable title bar shown at the top of the tile.
+     Its background is a slightly darker shade of the tile's own colour. */
+  .tile-subheader {
+    flex-shrink: 0;
+    padding: 3px 10px;
+    font-weight: 700;
+    font-size: 0.78rem;
+    line-height: 1.25;
+    color: var(--text-dark);
+    background: var(--tile-subheader-bg, rgba(0,0,0,0.06));
+    border-bottom: 1px solid var(--tile-border, #DDD);
+    border-radius: 0;
+    outline: none;
+    min-height: 1.2em;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    cursor: text;
+  }
+  .tile-subheader:empty::before {
+    content: 'Title…';
+    color: var(--text-faint);
+    font-weight: 500;
+    font-style: italic;
+    pointer-events: none;
+  }
+  .tile-subheader:focus { box-shadow: inset 0 0 0 1px var(--accent-soft); }
+
   /* TILE BODY is the positioning context for the image. The image is
      absolutely positioned in mm relative to the body, so we can drag it
      anywhere inside. */
@@ -1011,6 +1038,11 @@
     }
     .tile.selected { outline: none; box-shadow: none !important; }
     .tile-header { display: none !important; }
+    .tile-subheader.is-empty { display: none !important; }
+    .tile-subheader {
+      print-color-adjust: exact;
+      -webkit-print-color-adjust: exact;
+    }
     .tile-handle, .tile-image-handle { display: none !important; }
     .tile-image-wrap.image-selected { outline: none !important; }
     .tile-body { padding: 8px 10px; }
@@ -1476,6 +1508,7 @@ function upgradeTile(t) {
     w: clamp(t.w, 20, 999),
     h: clamp(t.h, 20, 999),
     color: TILE_COLOURS.includes(t.color) ? t.color : TILE_COLOURS[0],
+    subheader: typeof t.subheader === 'string' ? t.subheader : '',
     html: typeof t.html === 'string' ? t.html : '',
     image: normalizeTileImage(t.image, t.w, t.h),
     fontStep: clamp(t.fontStep, 1, 7),
@@ -1541,6 +1574,7 @@ function makeTile(pageIdx) {
     x: pos.x, y: pos.y,
     w: 70, h: 50,
     color: TILE_COLOURS[0],
+    subheader: '',
     html: '',
     image: { dataUrl: '', x: 0, y: 0, w: 0, h: 0 },
     fontStep: 3,
@@ -1709,6 +1743,7 @@ function renderTile(tile, pageIdx) {
   el.style.height = tile.h + 'mm';
   el.style.setProperty('--tile-bg', tile.color);
   el.style.setProperty('--tile-border', tile.color === '#FFFFFF' ? '#D5D5D0' : darkenColour(tile.color, 0.12));
+  el.style.setProperty('--tile-subheader-bg', tile.color === '#FFFFFF' ? '#EFEFEC' : darkenColour(tile.color, 0.10));
 
   // Header strip
   const header = document.createElement('div');
@@ -1720,6 +1755,16 @@ function renderTile(tile, pageIdx) {
       <button class="tile-mini-btn danger" data-action="delete" title="Delete">✕</button>
     </span>`;
   el.appendChild(header);
+
+  // Subheader — editable title bar at the top of the tile
+  const sub = document.createElement('div');
+  sub.className = 'tile-subheader' + ((tile.subheader || '').trim() ? '' : ' is-empty');
+  sub.contentEditable = 'true';
+  sub.spellcheck = false;
+  sub.dataset.tileId = tile.id;
+  sub.dataset.role = 'subheader';
+  sub.textContent = tile.subheader || '';
+  el.appendChild(sub);
 
   // Body
   const body = document.createElement('div');
@@ -3306,8 +3351,11 @@ function wireGlobal() {
 
   // Track focus on tile-text
   document.addEventListener('focusin', (e) => {
-    if (e.target.classList && e.target.classList.contains('tile-text')) {
-      lastFocusedText = e.target;
+    const cl = e.target.classList;
+    const isText = cl && cl.contains('tile-text');
+    const isSubheader = cl && cl.contains('tile-subheader');
+    if (isText || isSubheader) {
+      if (isText) lastFocusedText = e.target;
       const tileId = e.target.dataset.tileId;
       if (tileId && state.selectedTileId !== tileId) {
         state.selectedTileId = tileId;
@@ -3320,9 +3368,24 @@ function wireGlobal() {
     }
   });
 
+  // Keep the subheader title single-line — Enter commits instead of wrapping
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('tile-subheader')) {
+      e.preventDefault();
+      e.target.blur();
+    }
+  });
+
   document.addEventListener('input', (e) => {
     if (e.target.classList && e.target.classList.contains('tile-text')) {
       syncTileTextFromDom(e.target);
+    } else if (e.target.classList && e.target.classList.contains('tile-subheader')) {
+      const tileId = e.target.dataset.tileId;
+      if (tileId) {
+        const value = e.target.textContent;
+        updateTile(tileId, { subheader: value });
+        e.target.classList.toggle('is-empty', !value.trim());
+      }
     }
   });
 
@@ -3384,7 +3447,7 @@ function onSheetMouseDown(e) {
   const tileEl = e.target.closest('.tile');
   if (tileEl) {
     const tileId = tileEl.dataset.tileId;
-    if (!e.target.closest('.tile-text')) {
+    if (!e.target.closest('.tile-text') && !e.target.closest('.tile-subheader')) {
       selectTile(tileId);
     }
   }
@@ -3463,23 +3526,28 @@ function seedStarter() {
   const t1 = makeTile(0);
   t1.x = 10; t1.y = 35; t1.w = 90; t1.h = 50;
   t1.color = '#FFF3E0';
-  t1.html = '<b>Adding fractions</b><p>1. Make the denominators the same.<br>2. Add the numerators.<br>3. Simplify if possible.</p>';
+  t1.subheader = 'Adding fractions';
+  t1.html = '<p>1. Make the denominators the same.<br>2. Add the numerators.<br>3. Simplify if possible.</p>';
   const t2 = makeTile(0);
   t2.x = 110; t2.y = 35; t2.w = 90; t2.h = 50;
   t2.color = '#E3F2FD';
-  t2.html = '<b>Subtracting fractions</b><p>Same idea as adding — denominators must match first, then subtract the numerators.</p>';
+  t2.subheader = 'Subtracting fractions';
+  t2.html = '<p>Same idea as adding — denominators must match first, then subtract the numerators.</p>';
   const t3 = makeTile(0);
   t3.x = 10; t3.y = 95; t3.w = 90; t3.h = 60;
   t3.color = '#F1F8E9';
-  t3.html = '<b>Multiplying fractions</b><ol><li>Multiply the numerators.</li><li>Multiply the denominators.</li><li>Simplify.</li></ol>';
+  t3.subheader = 'Multiplying fractions';
+  t3.html = '<ol><li>Multiply the numerators.</li><li>Multiply the denominators.</li><li>Simplify.</li></ol>';
   const t4 = makeTile(0);
   t4.x = 110; t4.y = 95; t4.w = 90; t4.h = 60;
   t4.color = '#F3E5F5';
-  t4.html = '<b>Dividing fractions</b><p>Keep · Change · Flip</p><ul><li>Keep the first fraction</li><li>Change ÷ to ×</li><li>Flip the second fraction</li></ul>';
+  t4.subheader = 'Dividing fractions';
+  t4.html = '<p>Keep · Change · Flip</p><ul><li>Keep the first fraction</li><li>Change ÷ to ×</li><li>Flip the second fraction</li></ul>';
   const t5 = makeTile(0);
   t5.x = 10; t5.y = 165; t5.w = 190; t5.h = 40;
   t5.color = '#FFF9C4';
-  t5.html = '<b>Mixed numbers ↔ Improper fractions</b><p>Mixed → Improper: <i>(whole × denom) + num</i> over denom.<br>Improper → Mixed: divide num by denom; remainder is the new numerator.</p>';
+  t5.subheader = 'Mixed numbers ↔ Improper fractions';
+  t5.html = '<p>Mixed → Improper: <i>(whole × denom) + num</i> over denom.<br>Improper → Mixed: divide num by denom; remainder is the new numerator.</p>';
   state.pages[0].tiles.push(t1, t2, t3, t4, t5);
 }
 
