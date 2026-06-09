@@ -1130,6 +1130,13 @@
       <button class="btn btn-sm btn-danger" id="deletePageBtn" title="Delete the last page">🗑 Delete page</button>
     </div>
 
+    <div class="ctl-group">
+      <label>Gemini</label>
+      <button class="btn btn-sm btn-primary" id="aiImportBtn" title="Convert an uploaded image or PDF into a cheatsheet">AI from file</button>
+      <button class="btn btn-sm btn-icon" id="aiSettingsBtn" title="Gemini API key and model">⚙</button>
+      <input type="file" id="aiImportInput" accept="image/*,application/pdf" style="display:none" />
+    </div>
+
     <div class="ctl-group" id="libraryGroup">
       <label>Library</label>
       <button class="btn btn-sm btn-success" id="openLibraryBtn" disabled title="Sign in to use the cloud library">📚 Open</button>
@@ -1360,6 +1367,10 @@ const FIREBASE_CONFIG = {
 };
 const ADMIN_EMAIL = 'chungzhikai@gmail.com';
 const COLLECTION_PATH = 'apps/cheatsheetMaker/cheatsheets';
+const GEMINI_API_KEY_STORAGE = 'polymath.cheatsheet.geminiApiKey';
+const GEMINI_MODEL_STORAGE = 'polymath.cheatsheet.geminiModel';
+const GEMINI_DEFAULT_MODEL = 'gemini-3.1-pro-preview';
+const GEMINI_INLINE_FILE_LIMIT_BYTES = 18 * 1024 * 1024;
 
 firebase.initializeApp(FIREBASE_CONFIG);
 const auth = firebase.auth();
@@ -2643,6 +2654,415 @@ function handleImageFile(tileId, file) {
 }
 
 /* =========================================================================
+   GEMINI FILE -> CHEATSHEET
+   ========================================================================= */
+function configureGemini() {
+  const currentKey = localStorage.getItem(GEMINI_API_KEY_STORAGE) || '';
+  const nextKey = prompt('Gemini API key', currentKey);
+  if (nextKey !== null) {
+    if (nextKey.trim()) localStorage.setItem(GEMINI_API_KEY_STORAGE, nextKey.trim());
+    else localStorage.removeItem(GEMINI_API_KEY_STORAGE);
+  }
+
+  const currentModel = localStorage.getItem(GEMINI_MODEL_STORAGE) || GEMINI_DEFAULT_MODEL;
+  const nextModel = prompt('Gemini model ID', currentModel);
+  if (nextModel !== null) {
+    localStorage.setItem(GEMINI_MODEL_STORAGE, nextModel.trim() || GEMINI_DEFAULT_MODEL);
+  }
+  toast('Gemini settings saved', 'success');
+}
+
+function getGeminiSettingsForRun() {
+  let apiKey = localStorage.getItem(GEMINI_API_KEY_STORAGE) || '';
+  if (!apiKey) {
+    const entered = prompt('Gemini API key');
+    if (!entered || !entered.trim()) return null;
+    apiKey = entered.trim();
+    localStorage.setItem(GEMINI_API_KEY_STORAGE, apiKey);
+  }
+  const model = (localStorage.getItem(GEMINI_MODEL_STORAGE) || GEMINI_DEFAULT_MODEL).trim();
+  return { apiKey, model: model || GEMINI_DEFAULT_MODEL };
+}
+
+function setAiImportBusy(isBusy, label) {
+  const btn = document.getElementById('aiImportBtn');
+  if (!btn) return;
+  btn.disabled = !!isBusy;
+  btn.textContent = isBusy ? (label || 'Converting...') : 'AI from file';
+}
+
+function isAiImportFile(file) {
+  return !!file && (
+    (file.type && file.type.startsWith('image/')) ||
+    file.type === 'application/pdf' ||
+    /\.pdf$/i.test(file.name || '')
+  );
+}
+
+function geminiModelPath(model) {
+  const clean = String(model || GEMINI_DEFAULT_MODEL).trim() || GEMINI_DEFAULT_MODEL;
+  return clean.startsWith('models/') ? clean : 'models/' + clean;
+}
+
+function guessMimeType(file) {
+  if (file.type) return file.type;
+  if (/\.pdf$/i.test(file.name || '')) return 'application/pdf';
+  return 'application/octet-stream';
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(new Error('Could not read the file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function geminiError(resp) {
+  try {
+    const payload = await resp.json();
+    return (payload.error && payload.error.message) || resp.status + ' ' + resp.statusText;
+  } catch (_) {
+    return resp.status + ' ' + resp.statusText;
+  }
+}
+
+async function uploadFileToGemini(apiKey, file) {
+  const mimeType = guessMimeType(file);
+  const startResp = await fetch(
+    'https://generativelanguage.googleapis.com/upload/v1beta/files?key=' + encodeURIComponent(apiKey),
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Upload-Protocol': 'resumable',
+        'X-Goog-Upload-Command': 'start',
+        'X-Goog-Upload-Header-Content-Length': String(file.size),
+        'X-Goog-Upload-Header-Content-Type': mimeType,
+      },
+      body: JSON.stringify({ file: { display_name: file.name || 'cheatsheet-source' } }),
+    }
+  );
+  if (!startResp.ok) throw new Error(await geminiError(startResp));
+
+  const uploadUrl = startResp.headers.get('X-Goog-Upload-URL');
+  if (!uploadUrl) throw new Error('Gemini did not return an upload URL');
+
+  const uploadResp = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: {
+      'X-Goog-Upload-Offset': '0',
+      'X-Goog-Upload-Command': 'upload, finalize',
+    },
+    body: file,
+  });
+  if (!uploadResp.ok) throw new Error(await geminiError(uploadResp));
+  const payload = await uploadResp.json();
+  return payload.file || payload;
+}
+
+function geminiFileState(file) {
+  if (!file) return '';
+  if (typeof file.state === 'string') return file.state;
+  return (file.state && file.state.name) || '';
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitForGeminiFile(apiKey, file) {
+  if (!file || !file.name) return file;
+  let current = file;
+  for (let i = 0; i < 12; i++) {
+    const stateName = geminiFileState(current);
+    if (!stateName || stateName === 'ACTIVE') return current;
+    if (stateName === 'FAILED') throw new Error('Gemini could not process the uploaded file');
+    await delay(900 + i * 250);
+    const resp = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/' + current.name + '?key=' + encodeURIComponent(apiKey)
+    );
+    if (!resp.ok) throw new Error(await geminiError(resp));
+    const payload = await resp.json();
+    current = payload.file || payload;
+  }
+  return current;
+}
+
+function deleteGeminiUploadedFile(apiKey, file) {
+  if (!file || !file.name) return;
+  fetch(
+    'https://generativelanguage.googleapis.com/v1beta/' + file.name + '?key=' + encodeURIComponent(apiKey),
+    { method: 'DELETE' }
+  ).catch(() => {});
+}
+
+function cheatsheetPrompt(file) {
+  return [
+    'Convert the uploaded ' + guessMimeType(file) + ' into a concise classroom cheatsheet.',
+    'Return JSON only. No Markdown, no code fences.',
+    'The JSON shape must be:',
+    '{"title":"...","subtitle":"...","tiles":[{"heading":"...","bullets":["..."],"note":"optional"}]}',
+    'Create 6 to 12 tiles. Each tile should be short, exam-useful, and editable.',
+    'Prefer formulas, definitions, worked-step summaries, traps, and examples from the source.',
+    'Keep each bullet under 120 characters. Do not invent facts that are not supported by the source.',
+  ].join('\n');
+}
+
+function cheatsheetResponseSchema() {
+  return {
+    type: 'OBJECT',
+    properties: {
+      title: { type: 'STRING' },
+      subtitle: { type: 'STRING' },
+      tiles: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            heading: { type: 'STRING' },
+            bullets: { type: 'ARRAY', items: { type: 'STRING' } },
+            note: { type: 'STRING' },
+          },
+          required: ['heading', 'bullets'],
+        },
+      },
+    },
+    required: ['title', 'tiles'],
+  };
+}
+
+async function generateCheatsheetWithGemini(settings, filePart, file) {
+  const modelPath = geminiModelPath(settings.model);
+  const resp = await fetch(
+    'https://generativelanguage.googleapis.com/v1beta/' + modelPath + ':generateContent?key=' +
+      encodeURIComponent(settings.apiKey),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: cheatsheetPrompt(file) },
+            filePart,
+          ],
+        }],
+        generationConfig: {
+          temperature: 0.18,
+          maxOutputTokens: 6000,
+          responseMimeType: 'application/json',
+          responseSchema: cheatsheetResponseSchema(),
+        },
+      }),
+    }
+  );
+  if (!resp.ok) throw new Error(await geminiError(resp));
+  const payload = await resp.json();
+  const text = extractGeminiText(payload);
+  if (!text) throw new Error('Gemini returned an empty response');
+  return parseGeminiJson(text);
+}
+
+function extractGeminiText(payload) {
+  if (payload && payload.error) throw new Error(payload.error.message || 'Gemini request failed');
+  const candidate = payload && payload.candidates && payload.candidates[0];
+  const parts = candidate && candidate.content && Array.isArray(candidate.content.parts)
+    ? candidate.content.parts
+    : [];
+  return parts.map(p => p.text || '').join('').trim();
+}
+
+function parseGeminiJson(text) {
+  const stripped = String(text || '').trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '');
+  try {
+    return JSON.parse(stripped);
+  } catch (_) {
+    const match = stripped.match(/\{[\s\S]*\}/);
+    if (match) return JSON.parse(match[0]);
+    throw new Error('Gemini response was not valid JSON');
+  }
+}
+
+function cleanAiLine(value) {
+  return String(value == null ? '' : value)
+    .replace(/^[\s\-*\u2022\d.)]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function coerceAiLines(value) {
+  if (Array.isArray(value)) {
+    return value.map(cleanAiLine).filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value.split(/\n+/).map(cleanAiLine).filter(Boolean);
+  }
+  return [];
+}
+
+function titleFromFileName(name) {
+  const base = String(name || 'Generated cheatsheet')
+    .replace(/\.[^.]+$/, '')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  return base || 'Generated cheatsheet';
+}
+
+function normaliseGeminiCheatsheet(raw, sourceName) {
+  const sourceTitle = titleFromFileName(sourceName);
+  const rawTiles = Array.isArray(raw && raw.tiles)
+    ? raw.tiles
+    : (Array.isArray(raw && raw.sections) ? raw.sections : []);
+  const tiles = rawTiles.map((tile, idx) => {
+    const heading = cleanAiLine(tile.heading || tile.title || tile.name || ('Key idea ' + (idx + 1)));
+    let bullets = coerceAiLines(tile.bullets || tile.points || tile.steps || tile.content || tile.summary);
+    const extras = coerceAiLines(tile.note || tile.notes || tile.example || tile.formula);
+    bullets = bullets.concat(extras).map(line => line.slice(0, 180)).filter(Boolean);
+    if (!bullets.length && heading) bullets = [heading];
+    return {
+      heading,
+      bullets: bullets.slice(0, 7),
+      color: TILE_COLOURS[(idx + 1) % TILE_COLOURS.length],
+    };
+  }).filter(tile => tile.heading || tile.bullets.length).slice(0, 24);
+
+  return {
+    title: cleanAiLine(raw && raw.title) || sourceTitle,
+    subtitle: cleanAiLine(raw && raw.subtitle) || 'Generated from ' + sourceTitle,
+    tiles,
+  };
+}
+
+function aiTileHtml(tile) {
+  if (!tile.bullets.length) return '';
+  return '<ul>' + tile.bullets.map(line => '<li>' + escapeHtml(line) + '</li>').join('') + '</ul>';
+}
+
+function estimateAiTileHeight(tile) {
+  const wrappedLines = tile.bullets.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / 42)), 0);
+  return clamp(24 + wrappedLines * 5.6 + tile.bullets.length * 2.2, 34, 92);
+}
+
+function buildAiPages(aiTiles) {
+  const size = sheetSizeMm();
+  const gutter = 6;
+  const usableW = size.w - PAGE_MARGIN_MM * 2;
+  const cols = usableW >= 155 ? 2 : 1;
+  const tileW = (usableW - gutter * (cols - 1)) / cols;
+  const bottomReserve = (state.showLogo || state.showCopyright) ? 30 : PAGE_MARGIN_MM;
+  const pageBottom = size.h - bottomReserve;
+  const pages = [];
+  let page = null;
+  let ys = [];
+
+  function startPage() {
+    page = makeEmptyPage();
+    pages.push(page);
+    const top = pages.length === 1 ? PAGE_MARGIN_MM + 25 : PAGE_MARGIN_MM + 10;
+    ys = Array(cols).fill(top);
+  }
+
+  startPage();
+  aiTiles.forEach((sourceTile, idx) => {
+    let h = estimateAiTileHeight(sourceTile);
+    let placed = false;
+    while (!placed) {
+      let col = 0;
+      for (let i = 1; i < ys.length; i++) {
+        if (ys[i] < ys[col]) col = i;
+      }
+      const top = ys[col];
+      const available = pageBottom - top;
+      if (available >= h || page.tiles.length === 0) {
+        h = Math.min(h, Math.max(32, available));
+        const tile = makeTile(pages.length - 1);
+        tile.x = round1(PAGE_MARGIN_MM + col * (tileW + gutter));
+        tile.y = round1(top);
+        tile.w = round1(tileW);
+        tile.h = round1(h);
+        tile.color = sourceTile.color || TILE_COLOURS[(idx + 1) % TILE_COLOURS.length];
+        tile.subheader = sourceTile.heading;
+        tile.html = aiTileHtml(sourceTile);
+        tile.fontStep = sourceTile.bullets.join(' ').length > 520 ? 2 : 3;
+        page.tiles.push(tile);
+        ys[col] = top + h + gutter;
+        placed = true;
+      } else {
+        startPage();
+      }
+    }
+  });
+  return pages.length ? pages : [makeEmptyPage()];
+}
+
+function applyGeminiCheatsheet(raw, sourceName) {
+  const generated = normaliseGeminiCheatsheet(raw, sourceName);
+  if (!generated.tiles.length) throw new Error('Gemini did not find enough cheatsheet content');
+
+  state.title = generated.title;
+  state.subtitle = generated.subtitle;
+  state.pages = buildAiPages(generated.tiles);
+  state.selectedTileId = null;
+  state.selectedImageTileId = null;
+  state.cloudDocId = null;
+  state.cloudDocTitle = null;
+  state.cloudDocLoaded = false;
+  persist();
+  renderAll();
+}
+
+async function handleAiImportFile(file) {
+  if (!isAiImportFile(file)) {
+    toast('Choose an image or PDF', 'error');
+    return;
+  }
+  if (hasUnsavedWork() && !confirm('Replace the current cheatsheet with a Gemini-generated one?')) return;
+  const settings = getGeminiSettingsForRun();
+  if (!settings) return;
+
+  let uploadedFile = null;
+  try {
+    setAiImportBusy(true, 'Reading...');
+    setSaveState('saving', 'Gemini import running...');
+    let filePart;
+    if (file.type && file.type.startsWith('image/') && file.size <= GEMINI_INLINE_FILE_LIMIT_BYTES) {
+      const data = await readFileAsBase64(file);
+      filePart = { inline_data: { mime_type: guessMimeType(file), data } };
+    } else {
+      setAiImportBusy(true, 'Uploading...');
+      uploadedFile = await uploadFileToGemini(settings.apiKey, file);
+      uploadedFile = await waitForGeminiFile(settings.apiKey, uploadedFile);
+      filePart = {
+        file_data: {
+          mime_type: uploadedFile.mimeType || guessMimeType(file),
+          file_uri: uploadedFile.uri,
+        },
+      };
+    }
+
+    setAiImportBusy(true, 'Thinking...');
+    const response = await generateCheatsheetWithGemini(settings, filePart, file);
+    applyGeminiCheatsheet(response, file.name);
+    toast('Cheatsheet generated from file', 'success');
+  } catch (err) {
+    console.error('Gemini import failed', err);
+    setSaveState('error', 'Gemini import failed');
+    toast('Gemini import failed: ' + (err.message || err), 'error');
+  } finally {
+    setAiImportBusy(false);
+    deleteGeminiUploadedFile(settings.apiKey, uploadedFile);
+  }
+}
+
+/* =========================================================================
    FIREBASE AUTH
    ========================================================================= */
 const authState = {
@@ -3168,6 +3588,17 @@ function wireGlobal() {
   document.getElementById('importJsonBtn').addEventListener('click', () =>
     document.getElementById('importJsonInput').click());
   document.getElementById('importJsonInput').addEventListener('change', importJson);
+  document.getElementById('aiImportBtn').addEventListener('click', () => {
+    const input = document.getElementById('aiImportInput');
+    input.value = '';
+    input.click();
+  });
+  document.getElementById('aiSettingsBtn').addEventListener('click', configureGemini);
+  document.getElementById('aiImportInput').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) handleAiImportFile(file);
+    e.target.value = '';
+  });
 
   window.addEventListener('resize', () => fitSheetToViewport());
 
