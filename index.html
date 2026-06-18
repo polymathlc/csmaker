@@ -492,6 +492,27 @@
   }
   .tile-mini-btn:hover { background: rgba(0,0,0,0.12); }
   .tile-mini-btn.danger:hover { background: var(--danger-bg); color: var(--danger-strong); }
+  .tile-mini-btn.improve:hover,
+  .tile-mini-btn.mic:hover { background: var(--accent-bg); color: var(--accent-strong); }
+  /* While a request is running, hide the glyph and show a small spinner. */
+  .tile-mini-btn.busy { pointer-events: none; font-size: 0 !important; position: relative; }
+  .tile-mini-btn.busy::after {
+    content: '';
+    position: absolute; inset: 0; margin: auto;
+    width: 9px; height: 9px;
+    border: 1.5px solid var(--accent-strong);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: csmaker-spin 0.7s linear infinite;
+  }
+  /* Mic is actively recording — keep it red and visible until stopped. */
+  .tile-mini-btn.recording { background: var(--danger-strong); animation: csmaker-pulse 1.1s ease-in-out infinite; }
+  .tile.recording-active .tile-header-actions { opacity: 1; }
+  @keyframes csmaker-spin { to { transform: rotate(360deg); } }
+  @keyframes csmaker-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(198,40,40,0); }
+    50% { box-shadow: 0 0 0 3px rgba(198,40,40,0.4); }
+  }
 
   /* TILE BODY is the positioning context for the image. The image is
      absolutely positioned in mm relative to the body, so we can drag it
@@ -1790,6 +1811,8 @@ function renderTile(tile, pageIdx) {
   const actions = document.createElement('span');
   actions.className = 'tile-header-actions';
   actions.innerHTML = `
+    <button class="tile-mini-btn mic" data-action="mic" title="Record &amp; transcribe with Gemini">🎤</button>
+    <button class="tile-mini-btn improve" data-action="improve" title="Improve grammar &amp; phrasing with AI (keeps your facts)">✨</button>
     <button class="tile-mini-btn" data-action="duplicate" title="Duplicate">⎘</button>
     <button class="tile-mini-btn danger" data-action="delete" title="Delete">✕</button>`;
 
@@ -3063,6 +3086,286 @@ async function handleAiImportFile(file) {
 }
 
 /* =========================================================================
+   GEMINI: PER-TILE "IMPROVE WORDING" + VOICE TRANSCRIPTION
+   -------------------------------------------------------------------------
+   Both features reuse the Gemini settings/helpers above. "Improve" only
+   polishes grammar/phrasing and is told never to change the facts. The mic
+   records audio, re-encodes it to a Gemini-friendly 16 kHz mono WAV, and asks
+   Gemini to transcribe it into the box.
+   ========================================================================= */
+function tileTextElById(tileId) {
+  return document.querySelector(`.tile-text[data-tile-id="${tileId}"]`);
+}
+
+function stripCodeFences(text) {
+  return String(text == null ? '' : text).trim()
+    .replace(/^```(?:html|json|text)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(new Error('Could not read the recording'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function callGeminiGenerateText(settings, parts, genConfig) {
+  const modelPath = geminiModelPath(settings.model);
+  const resp = await fetch(
+    'https://generativelanguage.googleapis.com/v1beta/' + modelPath + ':generateContent?key=' +
+      encodeURIComponent(settings.apiKey),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts }],
+        generationConfig: Object.assign({ temperature: 0.2, maxOutputTokens: 2048 }, genConfig || {}),
+      }),
+    }
+  );
+  if (!resp.ok) throw new Error(await geminiError(resp));
+  const payload = await resp.json();
+  return extractGeminiText(payload);
+}
+
+/* ---- Improve wording (grammar/phrasing only, never the facts) ---- */
+async function improveTileText(tileId, btn) {
+  const el = tileTextElById(tileId);
+  if (!el) return;
+  const html = el.innerHTML.trim();
+  const plain = (el.textContent || '').replace(/ /g, ' ').trim();
+  if (!plain) { toast('Type some notes in this box first, then click ✨', 'info'); return; }
+  const settings = getGeminiSettingsForRun();
+  if (!settings) return;
+  if (btn) btn.classList.add('busy');
+  setSaveState('saving', 'Improving wording…');
+  try {
+    const prompt = [
+      'You are a careful copy editor polishing one box of a study cheatsheet.',
+      'Rewrite the HTML fragment below to fix grammar, spelling, punctuation and awkward phrasing.',
+      'STRICT RULES:',
+      '- Do NOT add new information, facts, examples, numbers, symbols or formulas.',
+      '- Do NOT remove any information that is present.',
+      '- Do NOT change the meaning, the terminology, any numbers, or any formulas.',
+      '- Keep the SAME language as the input.',
+      '- Preserve the HTML structure and every tag/attribute exactly (same <ul>, <ol>, <li>, <b>, <i>, <u>, <br>, <span>, styles, etc.). Only edit the human-readable text inside the tags.',
+      '- Return ONLY the corrected HTML fragment. No explanations, no Markdown, no code fences.',
+      '',
+      'HTML to improve:',
+      html,
+    ].join('\n');
+    const improved = stripCodeFences(await callGeminiGenerateText(settings, [{ text: prompt }], { temperature: 0.2 }));
+    if (!improved) throw new Error('Gemini returned an empty response');
+    el.innerHTML = improved;
+    syncTileTextFromDom(el);
+    toast('Wording improved — your facts were kept', 'success');
+  } catch (err) {
+    console.error('AI improve failed', err);
+    setSaveState('error', 'AI improve failed');
+    toast('AI improve failed: ' + (err.message || err), 'error');
+  } finally {
+    if (btn) btn.classList.remove('busy');
+  }
+}
+
+/* ---- Voice → text (Gemini transcription) ---- */
+let activeRecording = null;
+
+function pickRecorderMime() {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg', 'audio/mp4'];
+  for (const m of candidates) { if (MediaRecorder.isTypeSupported(m)) return m; }
+  return '';
+}
+
+function toggleTileRecording(tileId, btn) {
+  // A second click (on any mic) stops the current recording and transcribes it.
+  if (activeRecording) { stopActiveRecording(); return; }
+  startTileRecording(tileId, btn);
+}
+
+async function startTileRecording(tileId, btn) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+    toast('Voice recording is not supported in this browser', 'error');
+    return;
+  }
+  const settings = getGeminiSettingsForRun();
+  if (!settings) return;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (_) {
+    toast('Microphone permission was blocked', 'error');
+    return;
+  }
+  let recorder;
+  try {
+    const mime = pickRecorderMime();
+    recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  } catch (_) {
+    stream.getTracks().forEach(t => t.stop());
+    toast('Could not start the recorder', 'error');
+    return;
+  }
+  const chunks = [];
+  recorder.addEventListener('dataavailable', (e) => { if (e.data && e.data.size) chunks.push(e.data); });
+  recorder.addEventListener('stop', () => finishTileRecording(settings, tileId, btn, chunks, recorder.mimeType));
+  activeRecording = { tileId, recorder, stream, btn };
+  if (btn) {
+    btn.classList.add('recording');
+    btn.title = 'Stop recording';
+    const t = btn.closest('.tile');
+    if (t) t.classList.add('recording-active');
+  }
+  recorder.start();
+  toast('Recording… click the mic again to stop', 'info');
+}
+
+function stopActiveRecording() {
+  const rec = activeRecording;
+  if (!rec) return;
+  if (rec.btn) { rec.btn.classList.remove('recording'); rec.btn.classList.add('busy'); }
+  try { if (rec.recorder.state !== 'inactive') rec.recorder.stop(); } catch (_) {}
+}
+
+async function finishTileRecording(settings, tileId, btn, chunks, recordedMime) {
+  const rec = activeRecording;
+  activeRecording = null;
+  if (rec && rec.stream) rec.stream.getTracks().forEach(t => t.stop());
+  const clearBtn = () => {
+    if (!btn) return;
+    btn.classList.remove('recording', 'busy');
+    btn.title = 'Record & transcribe with Gemini';
+    const t = btn.closest('.tile');
+    if (t) t.classList.remove('recording-active');
+  };
+  try {
+    if (!chunks.length) { toast('No audio was captured', 'error'); return; }
+    const recordedBlob = new Blob(chunks, { type: recordedMime || 'audio/webm' });
+    setSaveState('saving', 'Transcribing…');
+    const wavBlob = await blobToWav16k(recordedBlob);
+    const base64 = await blobToBase64(wavBlob);
+    const prompt = [
+      'Transcribe the spoken words in this audio exactly as said.',
+      'Return only the transcript as plain text with natural punctuation and capitalisation.',
+      'Do not add commentary, timestamps, speaker labels, headings or quotation marks.',
+      'If there is no clear speech, return an empty string.',
+    ].join('\n');
+    const text = stripCodeFences(await callGeminiGenerateText(
+      settings,
+      [{ text: prompt }, { inline_data: { mime_type: 'audio/wav', data: base64 } }],
+      { temperature: 0 }
+    )).trim();
+    if (!text) { toast('Could not hear any speech', 'info'); return; }
+    const el = tileTextElById(tileId);
+    if (!el) { toast('That box is no longer available', 'error'); return; }
+    insertTranscriptIntoTile(el, text);
+    toast('Transcript added', 'success');
+  } catch (err) {
+    console.error('Transcription failed', err);
+    setSaveState('error', 'Transcription failed');
+    toast('Transcription failed: ' + (err.message || err), 'error');
+  } finally {
+    clearBtn();
+  }
+}
+
+function insertTranscriptIntoTile(el, text) {
+  el.focus();
+  const sel = window.getSelection();
+  const caretInEl = sel && sel.rangeCount && el.contains(sel.getRangeAt(0).commonAncestorContainer);
+  let inserted = false;
+  if (caretInEl) {
+    try { inserted = document.execCommand('insertText', false, text); } catch (_) { inserted = false; }
+  }
+  if (!inserted) {
+    const hadText = (el.textContent || '').trim().length > 0;
+    el.appendChild(document.createTextNode((hadText ? ' ' : '') + text));
+  }
+  syncTileTextFromDom(el);
+}
+
+/* Decode whatever the browser recorded and re-encode to 16 kHz mono WAV, which
+   the Gemini API reliably accepts as inline audio across browsers. */
+async function blobToWav16k(blob) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) throw new Error('Audio decoding is not supported here');
+  const arrayBuf = await blob.arrayBuffer();
+  const decodeCtx = new AC();
+  let decoded;
+  try {
+    decoded = await new Promise((resolve, reject) => {
+      const maybePromise = decodeCtx.decodeAudioData(arrayBuf.slice(0), resolve, reject);
+      if (maybePromise && typeof maybePromise.then === 'function') maybePromise.then(resolve, reject);
+    });
+  } finally {
+    if (decodeCtx.close) { try { decodeCtx.close(); } catch (_) {} }
+  }
+  const targetRate = 16000;
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  let rendered = decoded;
+  if (OAC && decoded.sampleRate !== targetRate) {
+    const frames = Math.max(1, Math.ceil(decoded.duration * targetRate));
+    const offline = new OAC(1, frames, targetRate);
+    const src = offline.createBufferSource();
+    src.buffer = decoded;
+    src.connect(offline.destination);
+    src.start(0);
+    rendered = await offline.startRendering();
+  }
+  return audioBufferToWavBlob(rendered);
+}
+
+function audioBufferToWavBlob(buffer) {
+  const numCh = 1; // mix down to mono — plenty for speech
+  const sampleRate = buffer.sampleRate;
+  const length = buffer.length;
+  const mono = new Float32Array(length);
+  const channels = [];
+  for (let c = 0; c < buffer.numberOfChannels; c++) channels.push(buffer.getChannelData(c));
+  for (let i = 0; i < length; i++) {
+    let sum = 0;
+    for (let c = 0; c < channels.length; c++) sum += channels[c][i];
+    mono[i] = channels.length ? sum / channels.length : 0;
+  }
+  const bytesPerSample = 2;
+  const blockAlign = numCh * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = length * blockAlign;
+  const out = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(out);
+  let off = 0;
+  const writeStr = (s) => { for (let i = 0; i < s.length; i++) view.setUint8(off++, s.charCodeAt(i)); };
+  writeStr('RIFF');
+  view.setUint32(off, 36 + dataSize, true); off += 4;
+  writeStr('WAVE');
+  writeStr('fmt ');
+  view.setUint32(off, 16, true); off += 4;
+  view.setUint16(off, 1, true); off += 2;            // PCM
+  view.setUint16(off, numCh, true); off += 2;
+  view.setUint32(off, sampleRate, true); off += 4;
+  view.setUint32(off, byteRate, true); off += 4;
+  view.setUint16(off, blockAlign, true); off += 2;
+  view.setUint16(off, 16, true); off += 2;           // bits per sample
+  writeStr('data');
+  view.setUint32(off, dataSize, true); off += 4;
+  for (let i = 0; i < length; i++) {
+    let s = Math.max(-1, Math.min(1, mono[i]));
+    s = s < 0 ? s * 0x8000 : s * 0x7fff;
+    view.setInt16(off, s, true); off += 2;
+  }
+  return new Blob([out], { type: 'audio/wav' });
+}
+
+/* =========================================================================
    FIREBASE AUTH
    ========================================================================= */
 const authState = {
@@ -3878,6 +4181,8 @@ function wireGlobal() {
     const action = btn.dataset.action;
     if (action === 'delete') deleteTile(tileId);
     else if (action === 'duplicate') duplicateTile(tileId);
+    else if (action === 'improve') improveTileText(tileId, btn);
+    else if (action === 'mic') toggleTileRecording(tileId, btn);
   });
 }
 
