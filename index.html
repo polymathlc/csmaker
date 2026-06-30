@@ -1602,7 +1602,7 @@ function makeEmptyPage() {
    ========================================================================= */
 function defaultTilePosition(pageIdx) {
   const page = state.pages[pageIdx];
-  const n = page.tiles.length;
+  const n = page ? page.tiles.length : 0;
   const startX = PAGE_MARGIN_MM;
   const startY = PAGE_MARGIN_MM + 20;
   return {
