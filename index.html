@@ -949,6 +949,106 @@
   }
   .modal-close:hover { background: var(--border-faint); color: var(--text-dark); }
 
+  /* =========================================================================
+     FLASHCARDS
+     ========================================================================= */
+  .fc-toolbar {
+    display: flex; gap: var(--space-xs); align-items: center;
+    flex-wrap: wrap; margin-bottom: var(--space-md);
+  }
+  .fc-toolbar .fc-spacer { flex: 1; }
+  .fc-due-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 999px;
+    font-size: 0.82rem; font-weight: 700;
+    background: var(--bg-soft); color: var(--text-soft);
+    border: 1px solid var(--border-faint);
+  }
+  .fc-due-pill.has-due { background: #FFF3D6; color: #9A6400; border-color: #F2D79A; }
+  .fc-due-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 17px; height: 17px; padding: 0 5px; margin-left: 4px;
+    border-radius: 999px; background: #E2574C; color: #fff;
+    font-size: 0.68rem; font-weight: 800; line-height: 1;
+  }
+
+  .fc-list { display: flex; flex-direction: column; gap: var(--space-xs); }
+  .fc-empty {
+    text-align: center; padding: 40px 20px; color: var(--text-soft);
+  }
+  .fc-empty .fc-empty-icon { font-size: 2.4rem; margin-bottom: 8px; }
+  .fc-row {
+    display: flex; gap: var(--space-sm); align-items: stretch;
+    padding: 10px 12px; border: 1px solid var(--border-faint);
+    border-radius: var(--radius-md); background: var(--bg-card);
+    transition: border-color var(--transition-fast);
+  }
+  .fc-row:hover { border-color: var(--border); }
+  .fc-row.is-due { border-left: 4px solid #F0A500; }
+  .fc-row-main { flex: 1; min-width: 0; }
+  .fc-row-front { font-weight: 700; color: var(--text-dark); font-size: 0.92rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fc-row-back { color: var(--text-soft); font-size: 0.82rem; margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fc-row-meta { font-size: 0.7rem; color: var(--text-soft); margin-top: 4px; }
+  .fc-row-actions { display: flex; gap: 4px; align-items: center; }
+  .fc-icon-btn {
+    width: 30px; height: 30px; border-radius: var(--radius-sm);
+    color: var(--text-soft); font-size: 0.95rem; flex: none;
+  }
+  .fc-icon-btn:hover { background: var(--border-faint); color: var(--text-dark); }
+  .fc-icon-btn.danger:hover { background: #FBE0E0; color: #C0392B; }
+
+  /* Study view */
+  .fc-study { display: flex; flex-direction: column; align-items: center; gap: var(--space-md); }
+  .fc-study-progress { font-size: 0.82rem; color: var(--text-soft); font-weight: 600; }
+  .fc-card {
+    width: 100%; max-width: 560px; min-height: 240px;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-faint);
+    box-shadow: var(--shadow-card, 0 6px 20px rgba(0,0,0,0.08));
+    background: var(--bg-card);
+    display: flex; flex-direction: column;
+    cursor: pointer; overflow: hidden;
+    transition: box-shadow var(--transition-fast);
+  }
+  .fc-card:hover { box-shadow: 0 10px 28px rgba(0,0,0,0.12); }
+  .fc-face {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 28px 26px; text-align: center; gap: 8px;
+  }
+  .fc-face-label {
+    font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase;
+    font-weight: 700; color: var(--text-soft);
+  }
+  .fc-face-content { font-size: 1.18rem; line-height: 1.5; color: var(--text-dark); }
+  .fc-card-divider { height: 1px; background: var(--border-faint); }
+  .fc-card-back { background: var(--bg-soft); }
+  .fc-flip-hint { font-size: 0.74rem; color: var(--text-soft); font-style: italic; }
+
+  .fc-grade-row { display: flex; gap: var(--space-xs); width: 100%; max-width: 560px; }
+  .fc-grade-btn {
+    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+    padding: 10px 6px; border-radius: var(--radius-md);
+    font-weight: 700; font-size: 0.86rem; color: #fff;
+    transition: filter var(--transition-fast);
+  }
+  .fc-grade-btn:hover { filter: brightness(1.07); }
+  .fc-grade-btn small { font-weight: 500; font-size: 0.68rem; opacity: 0.9; }
+  .fc-grade-again { background: #E2574C; }
+  .fc-grade-hard  { background: #E08A2B; }
+  .fc-grade-good  { background: #3FA45B; }
+  .fc-grade-easy  { background: #3B82C4; }
+  .fc-reveal-btn {
+    width: 100%; max-width: 560px;
+    padding: 12px; border-radius: var(--radius-md);
+    background: var(--accent, #6C5CE7); color: #fff;
+    font-weight: 700; font-size: 0.92rem;
+  }
+  .fc-study-done { text-align: center; padding: 30px 20px; }
+  .fc-study-done .fc-done-icon { font-size: 2.8rem; margin-bottom: 10px; }
+
   /* Library list */
   .lib-toolbar {
     display: flex; gap: var(--space-xs); margin-bottom: var(--space-md);
@@ -1149,6 +1249,12 @@
       <button class="btn btn-sm btn-primary" id="addTileBtn">＋ Add tile</button>
       <button class="btn btn-sm" id="addPageBtn" title="Append another page to the cheatsheet">＋ Add page</button>
       <button class="btn btn-sm btn-danger" id="deletePageBtn" title="Delete the last page">🗑 Delete page</button>
+    </div>
+
+    <div class="ctl-group">
+      <label>Flashcards</label>
+      <button class="btn btn-sm btn-primary" id="flashcardBtn" title="Study your concepts with spaced-repetition flashcards">🎴 Flashcards <span id="flashcardDueBadge" class="fc-due-badge" style="display:none;"></span></button>
+      <button class="btn btn-sm" id="addAllFlashcardsBtn" title="Turn every tile concept into a flashcard">＋ All concepts</button>
     </div>
 
     <div class="ctl-group">
@@ -1354,6 +1460,24 @@
   </div>
 </div>
 
+<!-- ===================== FLASHCARDS MODAL ===================== -->
+<div class="modal-backdrop" id="flashcardModal">
+  <div class="modal" style="max-width:640px;">
+    <div class="modal-header">
+      <h3>🎴 Flashcards
+        <small>Spaced-repetition review — cards resurface right as you're about to forget them</small>
+      </h3>
+      <button class="modal-close" data-close-flashcards>✕</button>
+    </div>
+    <div class="modal-body" id="flashcardBody">
+      <!-- Rendered by JS: deck view or study view -->
+    </div>
+    <div class="modal-footer" id="flashcardFooter">
+      <button class="btn btn-sm" data-close-flashcards>Close</button>
+    </div>
+  </div>
+</div>
+
 <div id="toastStack"></div>
 
 <!-- ===================== FIREBASE SDK ===================== -->
@@ -1467,6 +1591,7 @@ const state = {
   showLogo: true,
   showCopyright: true,
   pages: [],
+  flashcards: [],          // spaced-repetition study cards
   selectedTileId: null,
   selectedImageTileId: null,
   /* Cloud document tracking */
@@ -1502,6 +1627,7 @@ function serialiseState() {
     showLogo: state.showLogo,
     showCopyright: state.showCopyright,
     pages: state.pages,
+    flashcards: state.flashcards,
     cloudDocId: state.cloudDocId,
     cloudDocTitle: state.cloudDocTitle,
   };
@@ -1530,6 +1656,7 @@ function loadFromStorage() {
       showLogo: parsed.showLogo !== false,
       showCopyright: parsed.showCopyright !== false,
       pages: Array.isArray(parsed.pages) && parsed.pages.length ? parsed.pages.map(upgradePage) : [makeEmptyPage()],
+      flashcards: Array.isArray(parsed.flashcards) ? parsed.flashcards.map(upgradeFlashcard).filter(Boolean) : [],
       cloudDocId: parsed.cloudDocId || null,
       cloudDocTitle: parsed.cloudDocTitle || null,
     });
@@ -1655,6 +1782,418 @@ function findTile(tileId) {
 }
 
 /* =========================================================================
+   FLASHCARDS — spaced repetition
+   -------------------------------------------------------------------------
+   Each "concept" (a tile, or a single line of a tile) becomes a flashcard
+   with a front (prompt) and back (answer). Cards are scheduled with an
+   SM-2 style algorithm: the interval until the next review grows each time
+   you remember a card, and collapses when you forget it — so cards keep
+   resurfacing right around the point on the Ebbinghaus forgetting curve
+   where you're about to lose them.
+   ========================================================================= */
+const FC_DAY = 86400000;
+const FC_MIN = 60000;
+
+let fcStudy = null;   // active study session: { queue:[ids], idx, revealed, reviewed }
+
+function upgradeFlashcard(c) {
+  if (!c || typeof c !== 'object') return null;
+  const front = String(c.front == null ? '' : c.front);
+  const back = String(c.back == null ? '' : c.back);
+  if (!front.trim() && !back.trim()) return null;
+  const num = (v, d) => Number.isFinite(+v) ? +v : d;
+  return {
+    id: c.id || newId(),
+    front, back,
+    sourceTileId: c.sourceTileId || null,
+    ease: clamp(num(c.ease, 2.5), 1.3, 3.5),
+    intervalDays: Math.max(0, num(c.intervalDays, 0)),
+    reps: Math.max(0, Math.round(num(c.reps, 0))),
+    lapses: Math.max(0, Math.round(num(c.lapses, 0))),
+    due: num(c.due, Date.now()),
+    createdAt: num(c.createdAt, Date.now()),
+    lastReviewed: Number.isFinite(+c.lastReviewed) ? +c.lastReviewed : null,
+  };
+}
+
+function newFlashcard(front, back, sourceTileId) {
+  return {
+    id: newId(),
+    front: String(front || '').trim(),
+    back: String(back || '').trim(),
+    sourceTileId: sourceTileId || null,
+    ease: 2.5,
+    intervalDays: 0,
+    reps: 0,
+    lapses: 0,
+    due: Date.now(),          // brand-new cards are due immediately
+    createdAt: Date.now(),
+    lastReviewed: null,
+  };
+}
+
+/* Convert a tile's rich-text body into plain lines. */
+function htmlToPlain(html) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = String(html || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|ul|ol|h[1-6])>/gi, '\n');
+  return (tmp.textContent || '')
+    .replace(/ /g, ' ')
+    .split('\n').map(s => s.trim()).filter(Boolean).join('\n');
+}
+
+/* Derive a {front, back} from a tile. Uses the subheader as the prompt; if
+   the tile has no subheader, the first body line becomes the prompt. */
+function flashcardFromTile(tile) {
+  let front = String(tile.subheader || '').trim();
+  let back = htmlToPlain(tile.html);
+  if (!front && back) {
+    const lines = back.split('\n');
+    front = lines.shift();
+    back = lines.join('\n').trim();
+  }
+  return { front, back };
+}
+
+function addTileToFlashcards(tileId) {
+  const found = findTile(tileId);
+  if (!found) return;
+  const { front, back } = flashcardFromTile(found.tile);
+  if (!front && !back) { toast('This tile has no concept text yet', 'error'); return; }
+  const existing = state.flashcards.find(c => c.sourceTileId === tileId);
+  if (existing) {
+    existing.front = front || existing.front;
+    existing.back = back;
+    toast('Flashcard updated from this concept', 'success');
+  } else {
+    state.flashcards.push(newFlashcard(front, back, tileId));
+    toast('Added to flashcards 🎴', 'success');
+  }
+  persist();
+  updateFlashcardBadge();
+  if (isFlashcardModalOpen() && !fcStudy) renderFlashcards();
+}
+
+function addAllConceptsToFlashcards() {
+  let added = 0, updated = 0;
+  state.pages.forEach(p => p.tiles.forEach(tile => {
+    const { front, back } = flashcardFromTile(tile);
+    if (!front && !back) return;
+    const existing = state.flashcards.find(c => c.sourceTileId === tile.id);
+    if (existing) { existing.front = front || existing.front; existing.back = back; updated++; }
+    else { state.flashcards.push(newFlashcard(front, back, tile.id)); added++; }
+  }));
+  if (!added && !updated) { toast('No tile concepts to add yet', 'error'); return; }
+  persist();
+  updateFlashcardBadge();
+  toast(added + ' added · ' + updated + ' updated', 'success');
+  if (isFlashcardModalOpen() && !fcStudy) renderFlashcards();
+}
+
+/* ---- SM-2 style scheduler ---- */
+function scheduleFlashcard(card, grade, now) {
+  now = now || Date.now();
+  let ease = card.ease || 2.5;
+  let interval = card.intervalDays || 0;
+  let reps = card.reps || 0;
+  let lapses = card.lapses || 0;
+  let due;
+
+  if (grade === 'again') {
+    ease = Math.max(1.3, ease - 0.20);
+    reps = 0; lapses += 1; interval = 0;
+    due = now + 10 * FC_MIN;                 // relearn in ~10 minutes
+  } else {
+    if (grade === 'hard') ease = Math.max(1.3, ease - 0.15);
+    else if (grade === 'easy') ease = Math.min(3.5, ease + 0.15);
+    // 'good' keeps the ease factor unchanged
+
+    if (reps === 0) {
+      interval = grade === 'easy' ? 4 : 1;
+    } else if (reps === 1) {
+      interval = grade === 'hard' ? 3 : grade === 'easy' ? 7 : 4;
+    } else {
+      const mult = grade === 'hard' ? 1.2 : grade === 'easy' ? ease * 1.3 : ease;
+      interval = Math.max(1, Math.round(interval * mult));
+    }
+    interval = Math.min(interval, 365);
+    reps += 1;
+    due = now + interval * FC_DAY;
+  }
+  return { ease, intervalDays: interval, reps, lapses, due };
+}
+
+function flashcardPreview(card, grade) {
+  const s = scheduleFlashcard(card, grade, Date.now());
+  return formatDuration(s.due - Date.now());
+}
+
+function formatDuration(ms) {
+  if (ms < 0) ms = 0;
+  const mins = Math.round(ms / FC_MIN);
+  if (mins < 60) return Math.max(1, mins) + 'm';
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return hrs + 'h';
+  const days = Math.round(hrs / 24);
+  if (days < 31) return days + 'd';
+  const months = Math.round(days / 30);
+  if (months < 12) return months + 'mo';
+  return (Math.round(days / 36.5) / 10) + 'y';
+}
+
+function flashcardsDueNow(now) {
+  now = now || Date.now();
+  return state.flashcards.filter(c => (c.due || 0) <= now);
+}
+function flashcardDueCount() { return flashcardsDueNow().length; }
+
+function updateFlashcardBadge() {
+  const badge = document.getElementById('flashcardDueBadge');
+  if (!badge) return;
+  const n = flashcardDueCount();
+  if (n > 0) { badge.textContent = n; badge.style.display = ''; }
+  else { badge.style.display = 'none'; }
+}
+
+/* ---- small text helpers ---- */
+function fcTruncate(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+function fcOneLine(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
+function fcMultilineHtml(text) { return escapeHtml(String(text || '').trim()).replace(/\n/g, '<br>'); }
+
+/* ---- modal open / close ---- */
+function isFlashcardModalOpen() {
+  const m = document.getElementById('flashcardModal');
+  return !!m && m.classList.contains('open');
+}
+function openFlashcards() {
+  fcStudy = null;
+  document.getElementById('flashcardModal').classList.add('open');
+  renderFlashcards();
+}
+function closeFlashcards() {
+  fcStudy = null;
+  document.getElementById('flashcardModal').classList.remove('open');
+}
+
+function renderFlashcards() {
+  if (fcStudy) renderFlashcardStudy();
+  else renderFlashcardDeck();
+}
+
+/* ---- deck (management) view ---- */
+function renderFlashcardDeck() {
+  const body = document.getElementById('flashcardBody');
+  const footer = document.getElementById('flashcardFooter');
+  const now = Date.now();
+  const cards = state.flashcards;
+  const due = flashcardsDueNow(now);
+
+  const toolbar =
+    '<div class="fc-toolbar">' +
+      '<span class="fc-due-pill ' + (due.length ? 'has-due' : '') + '">🔥 ' + due.length + ' due</span>' +
+      '<span class="fc-due-pill">🗂 ' + cards.length + ' total</span>' +
+      '<span class="fc-spacer"></span>' +
+      '<button class="btn btn-sm" id="fcAddConceptsBtn">＋ All concepts</button>' +
+      '<button class="btn btn-sm btn-primary" id="fcNewCardBtn">＋ New card</button>' +
+    '</div>';
+
+  let list;
+  if (!cards.length) {
+    list = '<div class="fc-empty"><div class="fc-empty-icon">🎴</div>' +
+      '<div>No flashcards yet.</div>' +
+      '<div style="margin-top:6px;font-size:0.84rem;">Click <b>＋ All concepts</b> to turn every tile into a card, ' +
+      'or press 🎴 on any tile.</div></div>';
+  } else {
+    const sorted = cards.slice().sort((a, b) => (a.due || 0) - (b.due || 0));
+    list = '<div class="fc-list">' + sorted.map(c => fcRowHtml(c, now)).join('') + '</div>';
+  }
+  body.innerHTML = toolbar + list;
+
+  footer.innerHTML =
+    '<button class="btn btn-sm" data-close-flashcards>Close</button>' +
+    '<button class="btn btn-sm btn-primary" id="fcStartStudyBtn" ' + (due.length ? '' : 'disabled') + '>▶ ' +
+      (due.length ? 'Study (' + due.length + ' due)' : 'All caught up 🎉') + '</button>';
+
+  const add = document.getElementById('fcAddConceptsBtn');
+  if (add) add.onclick = addAllConceptsToFlashcards;
+  document.getElementById('fcNewCardBtn').onclick = () => renderFlashcardEdit(null);
+  const start = document.getElementById('fcStartStudyBtn');
+  if (start) start.onclick = startFlashcardStudy;
+
+  body.querySelectorAll('[data-fc-edit]').forEach(b => {
+    b.onclick = () => {
+      const card = state.flashcards.find(c => c.id === b.dataset.fcEdit);
+      if (card) renderFlashcardEdit(card);
+    };
+  });
+  body.querySelectorAll('[data-fc-del]').forEach(b => {
+    b.onclick = () => deleteFlashcard(b.dataset.fcDel);
+  });
+  rebindFlashcardClose();
+}
+
+function fcRowHtml(c, now) {
+  const isDue = (c.due || 0) <= now;
+  const front = escapeHtml(fcTruncate(fcOneLine(c.front) || '(no front)', 80));
+  const back = escapeHtml(fcTruncate(fcOneLine(c.back) || '(no back)', 90));
+  const meta = isDue ? 'Due now' : 'Next review in ' + formatDuration((c.due || 0) - now);
+  return '<div class="fc-row ' + (isDue ? 'is-due' : '') + '" data-card-id="' + c.id + '">' +
+    '<div class="fc-row-main">' +
+      '<div class="fc-row-front">' + front + '</div>' +
+      '<div class="fc-row-back">' + back + '</div>' +
+      '<div class="fc-row-meta">' + meta + ' · reps ' + (c.reps || 0) +
+        (c.lapses ? ' · lapses ' + c.lapses : '') + '</div>' +
+    '</div>' +
+    '<div class="fc-row-actions">' +
+      '<button class="fc-icon-btn" data-fc-edit="' + c.id + '" title="Edit">✎</button>' +
+      '<button class="fc-icon-btn danger" data-fc-del="' + c.id + '" title="Delete">🗑</button>' +
+    '</div>' +
+  '</div>';
+}
+
+function deleteFlashcard(cardId) {
+  const idx = state.flashcards.findIndex(c => c.id === cardId);
+  if (idx < 0) return;
+  state.flashcards.splice(idx, 1);
+  persist();
+  updateFlashcardBadge();
+  renderFlashcards();
+}
+
+/* ---- edit / create view ---- */
+function renderFlashcardEdit(card) {
+  const body = document.getElementById('flashcardBody');
+  const footer = document.getElementById('flashcardFooter');
+  const isNew = !card;
+  body.innerHTML =
+    '<div class="form-row"><label>Front — the prompt / question</label>' +
+      '<textarea id="fcEditFront" rows="3" placeholder="e.g. What is the area of a circle?" ' +
+      'style="resize:vertical;font-family:inherit;">' + escapeHtml(card ? card.front : '') + '</textarea></div>' +
+    '<div class="form-row"><label>Back — the answer</label>' +
+      '<textarea id="fcEditBack" rows="6" placeholder="e.g. π × r²" ' +
+      'style="resize:vertical;font-family:inherit;">' + escapeHtml(card ? card.back : '') + '</textarea></div>';
+  footer.innerHTML =
+    '<button class="btn btn-sm" id="fcEditCancel">Cancel</button>' +
+    '<button class="btn btn-sm btn-primary" id="fcEditSave">💾 Save card</button>';
+
+  document.getElementById('fcEditCancel').onclick = () => renderFlashcardDeck();
+  document.getElementById('fcEditSave').onclick = () => {
+    const front = document.getElementById('fcEditFront').value.trim();
+    const back = document.getElementById('fcEditBack').value.trim();
+    if (!front && !back) { toast('Add a front or back first', 'error'); return; }
+    if (isNew) {
+      state.flashcards.push(newFlashcard(front, back, null));
+    } else {
+      card.front = front; card.back = back;
+    }
+    persist();
+    updateFlashcardBadge();
+    toast(isNew ? 'Flashcard created' : 'Flashcard saved', 'success');
+    renderFlashcardDeck();
+  };
+  setTimeout(() => { const f = document.getElementById('fcEditFront'); if (f) f.focus(); }, 30);
+}
+
+/* ---- study session ---- */
+function startFlashcardStudy() {
+  const due = flashcardsDueNow().sort((a, b) => (a.due || 0) - (b.due || 0));
+  if (!due.length) { toast('No cards due right now 🎉', 'success'); return; }
+  fcStudy = { queue: due.map(c => c.id), idx: 0, revealed: false, reviewed: 0 };
+  renderFlashcards();
+}
+
+function renderFlashcardStudy() {
+  const body = document.getElementById('flashcardBody');
+  const footer = document.getElementById('flashcardFooter');
+
+  if (!fcStudy || fcStudy.idx >= fcStudy.queue.length) {
+    const n = fcStudy ? fcStudy.reviewed : 0;
+    body.innerHTML = '<div class="fc-study-done"><div class="fc-done-icon">🎉</div>' +
+      '<div style="font-weight:700;font-size:1.1rem;">Session complete!</div>' +
+      '<div style="color:var(--text-soft);margin-top:6px;">Reviewed ' + n + ' card' + (n === 1 ? '' : 's') +
+      '. Come back when the next batch is due.</div></div>';
+    footer.innerHTML =
+      '<button class="btn btn-sm" id="fcBackToDeck">← Back to deck</button>' +
+      '<button class="btn btn-sm" data-close-flashcards>Close</button>';
+    document.getElementById('fcBackToDeck').onclick = () => { fcStudy = null; renderFlashcards(); };
+    rebindFlashcardClose();
+    return;
+  }
+
+  const card = state.flashcards.find(c => c.id === fcStudy.queue[fcStudy.idx]);
+  if (!card) { fcStudy.idx++; renderFlashcardStudy(); return; }
+
+  const frontHtml = fcMultilineHtml(card.front) || '<span style="color:var(--text-soft)">(no front)</span>';
+  let html =
+    '<div class="fc-study">' +
+      '<div class="fc-study-progress">Card ' + (fcStudy.idx + 1) + ' of ' + fcStudy.queue.length + '</div>' +
+      '<div class="fc-card" id="fcCard">' +
+        '<div class="fc-face">' +
+          '<span class="fc-face-label">' + (fcStudy.revealed ? 'Question' : 'Question — tap to reveal') + '</span>' +
+          '<div class="fc-face-content">' + frontHtml + '</div>' +
+          (fcStudy.revealed ? '' : '<div class="fc-flip-hint">click the card or press Space</div>') +
+        '</div>';
+  if (fcStudy.revealed) {
+    const backHtml = fcMultilineHtml(card.back) || '<span style="color:var(--text-soft)">(no back)</span>';
+    html +=
+        '<div class="fc-card-divider"></div>' +
+        '<div class="fc-face fc-card-back">' +
+          '<span class="fc-face-label">Answer</span>' +
+          '<div class="fc-face-content">' + backHtml + '</div>' +
+        '</div>';
+  }
+  html += '</div></div>';
+  body.innerHTML = html;
+
+  if (!fcStudy.revealed) {
+    footer.innerHTML =
+      '<button class="btn btn-sm" id="fcEndStudy">End session</button>' +
+      '<span style="flex:1"></span>' +
+      '<button class="fc-reveal-btn" id="fcRevealBtn" style="max-width:220px;">Show answer (Space)</button>';
+    document.getElementById('fcRevealBtn').onclick = revealFlashcard;
+  } else {
+    footer.innerHTML =
+      '<button class="fc-grade-btn fc-grade-again" data-grade="again">Again<small>' + flashcardPreview(card, 'again') + '</small></button>' +
+      '<button class="fc-grade-btn fc-grade-hard" data-grade="hard">Hard<small>' + flashcardPreview(card, 'hard') + '</small></button>' +
+      '<button class="fc-grade-btn fc-grade-good" data-grade="good">Good<small>' + flashcardPreview(card, 'good') + '</small></button>' +
+      '<button class="fc-grade-btn fc-grade-easy" data-grade="easy">Easy<small>' + flashcardPreview(card, 'easy') + '</small></button>';
+    footer.querySelectorAll('[data-grade]').forEach(b => {
+      b.onclick = () => gradeCurrentFlashcard(b.dataset.grade);
+    });
+  }
+  const cardEl = document.getElementById('fcCard');
+  if (cardEl) cardEl.onclick = () => { if (!fcStudy.revealed) revealFlashcard(); };
+  const end = document.getElementById('fcEndStudy');
+  if (end) end.onclick = () => { fcStudy = null; renderFlashcards(); };
+  rebindFlashcardClose();
+}
+
+function revealFlashcard() {
+  if (fcStudy && !fcStudy.revealed) { fcStudy.revealed = true; renderFlashcards(); }
+}
+
+function gradeCurrentFlashcard(grade) {
+  if (!fcStudy) return;
+  const card = state.flashcards.find(c => c.id === fcStudy.queue[fcStudy.idx]);
+  if (!card) { fcStudy.idx++; fcStudy.revealed = false; renderFlashcards(); return; }
+  const now = Date.now();
+  Object.assign(card, scheduleFlashcard(card, grade, now), { lastReviewed: now });
+  fcStudy.reviewed++;
+  if (grade === 'again') fcStudy.queue.push(card.id);   // see it again later this session
+  fcStudy.idx++;
+  fcStudy.revealed = false;
+  persist();
+  updateFlashcardBadge();
+  renderFlashcards();
+}
+
+/* Re-attach close handlers after a footer/body re-render. */
+function rebindFlashcardClose() {
+  document.querySelectorAll('[data-close-flashcards]').forEach(el => { el.onclick = closeFlashcards; });
+}
+
+/* =========================================================================
    RENDERING
    ========================================================================= */
 const sheetWrap = document.getElementById('sheetWrap');
@@ -1666,6 +2205,7 @@ function renderAll() {
   renderCloudDocPill();
   applyPagePrintRule();
   fitSheetToViewport();
+  updateFlashcardBadge();
 }
 
 function renderHeader() {
@@ -1813,6 +2353,7 @@ function renderTile(tile, pageIdx) {
   actions.innerHTML = `
     <button class="tile-mini-btn mic" data-action="mic" title="Record &amp; transcribe with Gemini">🎤</button>
     <button class="tile-mini-btn improve" data-action="improve" title="Improve grammar &amp; phrasing with AI (keeps your facts)">✨</button>
+    <button class="tile-mini-btn" data-action="flashcard" title="Add this concept to flashcards">🎴</button>
     <button class="tile-mini-btn" data-action="duplicate" title="Duplicate">⎘</button>
     <button class="tile-mini-btn danger" data-action="delete" title="Delete">✕</button>`;
 
@@ -3593,6 +4134,8 @@ function loadCheatsheet(docId) {
     state.showLogo = data.state.showLogo !== false;
     state.showCopyright = data.state.showCopyright !== false;
     state.pages = data.state.pages.map(upgradePage);
+    state.flashcards = Array.isArray(data.state.flashcards)
+      ? data.state.flashcards.map(upgradeFlashcard).filter(Boolean) : [];
     state.selectedTileId = null;
     state.selectedImageTileId = null;
     state.cloudDocId = docId;
@@ -3758,6 +4301,7 @@ function newCloudCheatsheet() {
   state.title = 'My Cheatsheet';
   state.subtitle = '';
   state.pages = [makeEmptyPage()];
+  state.flashcards = [];
   state.selectedTileId = null;
   state.selectedImageTileId = null;
   state.cloudDocId = null;
@@ -3828,6 +4372,7 @@ function wireGlobal() {
   document.getElementById('clearAllBtn').addEventListener('click', () => {
     if (!confirm('Clear the whole cheatsheet? This cannot be undone.')) return;
     state.pages = [makeEmptyPage()];
+    state.flashcards = [];
     state.selectedTileId = null;
     state.selectedImageTileId = null;
     state.cloudDocId = null;
@@ -3835,6 +4380,13 @@ function wireGlobal() {
     persist();
     renderAll();
     toast('Cheatsheet cleared');
+  });
+  // Flashcards
+  document.getElementById('flashcardBtn').addEventListener('click', openFlashcards);
+  document.getElementById('addAllFlashcardsBtn').addEventListener('click', addAllConceptsToFlashcards);
+  document.querySelectorAll('[data-close-flashcards]').forEach(el => el.addEventListener('click', closeFlashcards));
+  document.getElementById('flashcardModal').addEventListener('click', (e) => {
+    if (e.target.id === 'flashcardModal') closeFlashcards();
   });
   // Library
   document.getElementById('openLibraryBtn').addEventListener('click', openLibrary);
@@ -4091,6 +4643,24 @@ function wireGlobal() {
     }
   });
 
+  // Flashcard study shortcuts: Space reveals, 1-4 grade, Esc closes.
+  document.addEventListener('keydown', (e) => {
+    if (!isFlashcardModalOpen()) return;
+    const t = e.target;
+    const typing = t && (t.matches('input, textarea, select') || t.isContentEditable);
+    if (e.key === 'Escape') { closeFlashcards(); return; }
+    if (!fcStudy || typing) return;
+    if (e.code === 'Space' || e.key === 'Enter') {
+      e.preventDefault();
+      if (!fcStudy.revealed) revealFlashcard();
+      return;
+    }
+    if (fcStudy.revealed) {
+      const map = { '1': 'again', '2': 'hard', '3': 'good', '4': 'easy' };
+      if (map[e.key]) { e.preventDefault(); gradeCurrentFlashcard(map[e.key]); }
+    }
+  });
+
   // Keyboard nudges
   document.addEventListener('keydown', (e) => {
     const t = e.target;
@@ -4183,6 +4753,7 @@ function wireGlobal() {
     else if (action === 'duplicate') duplicateTile(tileId);
     else if (action === 'improve') improveTileText(tileId, btn);
     else if (action === 'mic') toggleTileRecording(tileId, btn);
+    else if (action === 'flashcard') addTileToFlashcards(tileId);
   });
 }
 
@@ -4285,6 +4856,7 @@ function importJson(e) {
       state.showLogo = s.showLogo !== false;
       state.showCopyright = s.showCopyright !== false;
       state.pages = s.pages.map(upgradePage);
+      state.flashcards = Array.isArray(s.flashcards) ? s.flashcards.map(upgradeFlashcard).filter(Boolean) : [];
       state.selectedTileId = null;
       state.cloudDocId = null;
       state.cloudDocTitle = null;
@@ -4346,6 +4918,7 @@ function init() {
   wireGlobal();
   setupAuth();
   renderAll();
+  updateFlashcardBadge();
 }
 document.addEventListener('DOMContentLoaded', init);
 </script>
