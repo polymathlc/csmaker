@@ -1187,6 +1187,41 @@
   }
 
   /* =========================================================================
+     PDF EXPORT
+     -------------------------------------------------------------------------
+     Applied while each sheet is captured. It mirrors the print rules so the
+     exported file matches the printed one, and drops the viewport-fitting
+     transform so sheets are captured at their true millimetre size.
+     ========================================================================= */
+  body.exporting .sheet-wrap {
+    transform: none !important;
+    margin: 0 !important;
+    box-shadow: none;
+  }
+  body.exporting .sheet {
+    box-shadow: none;
+    border-radius: 0;
+    background-image: none;
+  }
+  body.exporting .sheet-safe-zone,
+  body.exporting .empty-state-overlay,
+  body.exporting .snap-guide,
+  body.exporting .img-snap-guide,
+  body.exporting .drag-readout,
+  body.exporting .tile-header-grip,
+  body.exporting .tile-header-actions,
+  body.exporting .tile-handle,
+  body.exporting .tile-image-handle,
+  body.exporting .tile-header.is-empty { display: none !important; }
+  body.exporting .tile {
+    box-shadow: none !important;
+    transition: none !important;
+  }
+  body.exporting .tile.selected { outline: none; box-shadow: none !important; }
+  body.exporting .tile-image-wrap.image-selected { outline: none !important; }
+  body.exporting .tile-body { padding: 8px 10px; }
+
+  /* =========================================================================
      RESPONSIVE
      ========================================================================= */
   @media (max-width: 900px) {
@@ -1274,6 +1309,7 @@
 
     <div class="ctl-group">
       <label>Export</label>
+      <button class="btn btn-sm btn-primary" id="exportPdfBtn" title="Download the cheatsheet as a PDF file">⤓ PDF</button>
       <button class="btn btn-sm" id="exportJsonBtn">⤓ JSON</button>
       <button class="btn btn-sm" id="importJsonBtn">⤒ Import</button>
       <input type="file" id="importJsonInput" accept="application/json" style="display:none" />
@@ -1532,6 +1568,21 @@ const PDF_RENDER_MAX_PAGES = 120;
 const PDF_RENDER_MIN_QUALITY = 0.4;
 const PDF_RENDER_START_QUALITY = 0.72;
 const IMAGE_DOWNSCALE_MAX_EDGE = 2000;
+/* Capture scale for the PDF export. 3x a 96 dpi layout is roughly 288 dpi,
+   which stays crisp in print without making the file unwieldy. */
+const PDF_EXPORT_SCALE = 3;
+const PDF_EXPORT_SCALE_MANY_PAGES = 2;
+const PDF_EXPORT_JPEG_QUALITY = 0.94;
+const HTML2CANVAS_SOURCES = [
+  'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js',
+  'https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js',
+  'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js',
+];
+const JSPDF_SOURCES = [
+  'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
+  'https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js',
+  'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js',
+];
 const PDFJS_SOURCES = [
   {
     lib: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
@@ -3326,6 +3377,25 @@ function loadScriptOnce(url) {
   });
 }
 
+/* Load a library from the first mirror that answers, so one blocked or
+   unreachable CDN does not take the feature down with it. */
+async function loadFromMirrors(urls, getGlobal, label) {
+  const ready = getGlobal();
+  if (ready) return ready;
+  let lastErr = null;
+  for (const url of urls) {
+    try {
+      await loadScriptOnce(url);
+      const value = getGlobal();
+      if (value) return value;
+      throw new Error('did not initialise');
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw new Error('Could not load ' + label + (lastErr ? ' (' + lastErr.message + ')' : ''));
+}
+
 /* pdf.js is only needed for oversized PDFs, so it is fetched on demand rather
    than on every page load. Mirrors are tried in turn in case one is blocked. */
 async function ensurePdfJs() {
@@ -4731,6 +4801,7 @@ function wireGlobal() {
   });
 
   // Export / import JSON
+  document.getElementById('exportPdfBtn').addEventListener('click', exportPdf);
   document.getElementById('exportJsonBtn').addEventListener('click', exportJson);
   document.getElementById('importJsonBtn').addEventListener('click', () =>
     document.getElementById('importJsonInput').click());
@@ -5103,6 +5174,97 @@ function onSheetMouseDown(e) {
 /* =========================================================================
    IMPORT / EXPORT JSON
    ========================================================================= */
+function exportFileName(extension) {
+  const base = (state.title || 'cheatsheet')
+    .replace(/[^a-z0-9_-]+/gi, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase();
+  return (base || 'cheatsheet') + '.' + extension;
+}
+
+function nextFrame() {
+  return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+function setExportPdfBusy(isBusy, label) {
+  const btn = document.getElementById('exportPdfBtn');
+  if (!btn) return;
+  btn.disabled = !!isBusy;
+  btn.textContent = isBusy ? (label || 'PDF...') : '⤓ PDF';
+}
+
+/* Export every sheet into one PDF sized to the chosen paper. Each sheet is
+   captured as an image so the file matches the editor exactly, including tile
+   colours, embedded pictures, and the footer. */
+async function exportPdf() {
+  // Selection outlines and drag handles must not be baked into the file.
+  state.selectedTileId = null;
+  state.selectedImageTileId = null;
+  renderAll();
+
+  // Query after the re-render - renderAll() replaces the sheet elements, and
+  // html2canvas cannot capture a node that is no longer in the document.
+  const sheets = Array.from(document.querySelectorAll('.sheet'));
+  if (!sheets.length) {
+    toast('Nothing to export yet', 'error');
+    return;
+  }
+
+  const size = sheetSizeMm();
+  const orientation = size.w > size.h ? 'landscape' : 'portrait';
+  const scale = sheets.length > 6 ? PDF_EXPORT_SCALE_MANY_PAGES : PDF_EXPORT_SCALE;
+  let failure = null;
+
+  setExportPdfBusy(true, 'Preparing...');
+  try {
+    const html2canvas = await loadFromMirrors(
+      HTML2CANVAS_SOURCES, () => window.html2canvas, 'the PDF renderer');
+    const jspdf = await loadFromMirrors(
+      JSPDF_SOURCES, () => window.jspdf, 'the PDF writer');
+    const JsPdf = jspdf.jsPDF;
+    if (!JsPdf) throw new Error('the PDF writer is unavailable');
+
+    const doc = new JsPdf({ unit: 'mm', format: [size.w, size.h], orientation, compress: true });
+    document.body.classList.add('exporting');
+    await nextFrame();
+
+    for (let i = 0; i < sheets.length; i++) {
+      setExportPdfBusy(true, 'Page ' + (i + 1) + '/' + sheets.length);
+      const canvas = await html2canvas(sheets[i], {
+        scale,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        logging: false,
+        imageTimeout: 20000,
+      });
+      const image = canvas.toDataURL('image/jpeg', PDF_EXPORT_JPEG_QUALITY);
+      canvas.width = 0;
+      canvas.height = 0;
+      if (i > 0) doc.addPage([size.w, size.h], orientation);
+      doc.addImage(image, 'JPEG', 0, 0, size.w, size.h, undefined, 'FAST');
+      await nextFrame();
+    }
+
+    doc.save(exportFileName('pdf'));
+    toast('PDF exported', 'success');
+  } catch (err) {
+    console.error('PDF export failed', err);
+    failure = err;
+  } finally {
+    document.body.classList.remove('exporting');
+    setExportPdfBusy(false);
+  }
+
+  if (failure) {
+    // Falling back to the browser's own print-to-PDF still gets the teacher a
+    // file, and it prints vector text rather than a captured image.
+    toast('Could not build the PDF (' + ((failure && failure.message) || failure) +
+      '). Opening print instead - choose "Save as PDF".', 'error');
+    applyPagePrintRule();
+    setTimeout(() => window.print(), 400);
+  }
+}
+
 function exportJson() {
   const payload = {
     polymathCheatsheetVersion: 2,
@@ -5121,7 +5283,7 @@ function exportJson() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = (state.title || 'cheatsheet').replace(/[^a-z0-9_-]+/gi, '_').toLowerCase() + '.json';
+  a.download = exportFileName('json');
   document.body.appendChild(a);
   a.click();
   a.remove();
