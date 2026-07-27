@@ -1515,7 +1515,12 @@ const COLLECTION_PATH = 'apps/cheatsheetMaker/cheatsheets';
 const GEMINI_API_KEY_STORAGE = 'polymath.cheatsheet.geminiApiKey';
 const GEMINI_MODEL_STORAGE = 'polymath.cheatsheet.geminiModel';
 const GEMINI_DEFAULT_MODEL = 'gemini-3.1-pro-preview';
-const GEMINI_INLINE_FILE_LIMIT_BYTES = 18 * 1024 * 1024;
+/* Inline base64 grows the request by ~4/3, and Gemini rejects generateContent
+   bodies over 20 MB, so keep the raw-byte cut-off well under that. Anything
+   bigger goes through the resumable Files API upload instead. */
+const GEMINI_INLINE_FILE_LIMIT_BYTES = 12 * 1024 * 1024;
+const GEMINI_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+const GEMINI_FILE_PROCESSING_TIMEOUT_MS = 6 * 60 * 1000;
 
 firebase.initializeApp(FIREBASE_CONFIG);
 const auth = firebase.auth();
@@ -1530,7 +1535,7 @@ function toast(message, kind) {
   el.className = 'toast' + (kind ? ' ' + kind : '');
   el.textContent = message;
   stack.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
+  setTimeout(() => el.remove(), kind === 'error' ? 8000 : 3000);
 }
 
 /* =========================================================================
@@ -3287,18 +3292,38 @@ function readFileAsBase64(file) {
   });
 }
 
-async function geminiError(resp) {
+async function geminiError(resp, step) {
+  let message = '';
   try {
     const payload = await resp.json();
-    return (payload.error && payload.error.message) || resp.status + ' ' + resp.statusText;
-  } catch (_) {
-    return resp.status + ' ' + resp.statusText;
-  }
+    message = (payload && payload.error && payload.error.message) || '';
+  } catch (_) { /* body was not JSON */ }
+  if (!message) message = resp.status + ' ' + resp.statusText;
+  return step ? step + ': ' + message : message;
 }
 
-async function uploadFileToGemini(apiKey, file) {
+/* Big uploads ride over slow classroom wifi, so retry the transport-level
+   failures (dropped connection, DNS blip) instead of losing the whole file. */
+async function geminiFetch(url, options, attempts) {
+  const max = attempts || 3;
+  let lastErr = null;
+  for (let i = 0; i < max; i++) {
+    try {
+      return await fetch(url, options);
+    } catch (err) {
+      lastErr = err;
+      if (i < max - 1) await delay(800 * Math.pow(2, i));
+    }
+  }
+  throw new Error('Network error talking to Gemini: ' + ((lastErr && lastErr.message) || 'request failed'));
+}
+
+async function uploadFileToGemini(apiKey, file, onProgress) {
   const mimeType = guessMimeType(file);
-  const startResp = await fetch(
+  const total = file.size;
+  if (!total) throw new Error('That file is empty');
+
+  const startResp = await geminiFetch(
     'https://generativelanguage.googleapis.com/upload/v1beta/files?key=' + encodeURIComponent(apiKey),
     {
       method: 'POST',
@@ -3306,27 +3331,40 @@ async function uploadFileToGemini(apiKey, file) {
         'Content-Type': 'application/json',
         'X-Goog-Upload-Protocol': 'resumable',
         'X-Goog-Upload-Command': 'start',
-        'X-Goog-Upload-Header-Content-Length': String(file.size),
+        'X-Goog-Upload-Header-Content-Length': String(total),
         'X-Goog-Upload-Header-Content-Type': mimeType,
       },
       body: JSON.stringify({ file: { display_name: file.name || 'cheatsheet-source' } }),
     }
   );
-  if (!startResp.ok) throw new Error(await geminiError(startResp));
+  if (!startResp.ok) throw new Error(await geminiError(startResp, 'Upload could not start'));
 
-  const uploadUrl = startResp.headers.get('X-Goog-Upload-URL');
+  const uploadUrl = startResp.headers.get('X-Goog-Upload-URL') ||
+    startResp.headers.get('x-goog-upload-url');
   if (!uploadUrl) throw new Error('Gemini did not return an upload URL');
 
-  const uploadResp = await fetch(uploadUrl, {
-    method: 'POST',
-    headers: {
-      'X-Goog-Upload-Offset': '0',
-      'X-Goog-Upload-Command': 'upload, finalize',
-    },
-    body: file,
-  });
-  if (!uploadResp.ok) throw new Error(await geminiError(uploadResp));
-  const payload = await uploadResp.json();
+  /* Send the bytes in chunks. A single 69 MB POST is what breaks on flaky
+     connections, and the offset header lets a retried chunk resume cleanly. */
+  let payload = null;
+  let offset = 0;
+  if (onProgress) onProgress(0, total);
+  while (offset < total) {
+    const end = Math.min(offset + GEMINI_UPLOAD_CHUNK_BYTES, total);
+    const last = end >= total;
+    const resp = await geminiFetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        'X-Goog-Upload-Offset': String(offset),
+        'X-Goog-Upload-Command': last ? 'upload, finalize' : 'upload',
+      },
+      body: file.slice(offset, end),
+    });
+    if (!resp.ok) throw new Error(await geminiError(resp, 'Upload failed'));
+    offset = end;
+    if (onProgress) onProgress(offset, total);
+    if (last) payload = await resp.json().catch(() => null);
+  }
+  if (!payload) throw new Error('Gemini did not confirm the upload');
   return payload.file || payload;
 }
 
@@ -3340,22 +3378,40 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function waitForGeminiFile(apiKey, file) {
+/* A 69 MB PDF stays in PROCESSING for minutes. Handing a non-ACTIVE file to
+   generateContent is what produces "Request contains an invalid argument", so
+   poll until it really is ready rather than giving up after a fixed count. */
+async function waitForGeminiFile(apiKey, file, onWait) {
   if (!file || !file.name) return file;
   let current = file;
-  for (let i = 0; i < 12; i++) {
+  const started = Date.now();
+  for (let attempt = 0; ; attempt++) {
     const stateName = geminiFileState(current);
-    if (!stateName || stateName === 'ACTIVE') return current;
-    if (stateName === 'FAILED') throw new Error('Gemini could not process the uploaded file');
-    await delay(900 + i * 250);
-    const resp = await fetch(
+    if (stateName === 'ACTIVE') return current;
+    if (stateName === 'FAILED') {
+      throw new Error('Gemini could not process the uploaded file. It may be corrupt or unsupported.');
+    }
+    // The API stopped reporting a state - nothing left to wait for.
+    if (attempt > 0 && !stateName) return current;
+
+    const waited = Date.now() - started;
+    if (waited > GEMINI_FILE_PROCESSING_TIMEOUT_MS) {
+      throw new Error(
+        'Gemini is still processing this file after ' +
+        Math.round(GEMINI_FILE_PROCESSING_TIMEOUT_MS / 60000) +
+        ' min. Try a smaller file, or split the PDF into fewer pages.'
+      );
+    }
+    if (onWait) onWait(waited);
+    await delay(Math.min(5000, 1000 + attempt * 500));
+
+    const resp = await geminiFetch(
       'https://generativelanguage.googleapis.com/v1beta/' + current.name + '?key=' + encodeURIComponent(apiKey)
     );
-    if (!resp.ok) throw new Error(await geminiError(resp));
+    if (!resp.ok) throw new Error(await geminiError(resp, 'Could not check the upload status'));
     const payload = await resp.json();
     current = payload.file || payload;
   }
-  return current;
 }
 
 function deleteGeminiUploadedFile(apiKey, file) {
@@ -3426,7 +3482,7 @@ async function generateCheatsheetWithGemini(settings, filePart, file) {
       }),
     }
   );
-  if (!resp.ok) throw new Error(await geminiError(resp));
+  if (!resp.ok) throw new Error(await geminiError(resp, 'Analysis failed'));
   const payload = await resp.json();
   const text = extractGeminiText(payload);
   if (!text) throw new Error('Gemini returned an empty response');
@@ -3583,6 +3639,22 @@ function applyGeminiCheatsheet(raw, sourceName) {
   renderAll();
 }
 
+function isGeminiFileNotReadyError(err) {
+  const message = String((err && err.message) || err || '');
+  return /ACTIVE state|not active|still processing|invalid argument/i.test(message);
+}
+
+/* "Request contains an invalid argument" on its own tells a teacher nothing.
+   Add the likely cause when the source file is big enough to hit a limit. */
+function describeAiImportError(err, file) {
+  const message = String((err && err.message) || err || 'Something went wrong');
+  const bigFile = file && file.size > GEMINI_INLINE_FILE_LIMIT_BYTES;
+  if (bigFile && /invalid argument|too large|exceeds|token count|page/i.test(message)) {
+    return message + ' This file may have too many pages for Gemini (about 1000 max) - try splitting it.';
+  }
+  return message;
+}
+
 async function handleAiImportFile(file) {
   if (!isAiImportFile(file)) {
     toast('Choose an image or PDF', 'error');
@@ -3601,9 +3673,14 @@ async function handleAiImportFile(file) {
       const data = await readFileAsBase64(file);
       filePart = { inline_data: { mime_type: guessMimeType(file), data } };
     } else {
-      setAiImportBusy(true, 'Uploading...');
-      uploadedFile = await uploadFileToGemini(settings.apiKey, file);
-      uploadedFile = await waitForGeminiFile(settings.apiKey, uploadedFile);
+      setAiImportBusy(true, 'Uploading 0%');
+      uploadedFile = await uploadFileToGemini(settings.apiKey, file, (sent, total) => {
+        setAiImportBusy(true, 'Uploading ' + Math.round((sent / total) * 100) + '%');
+      });
+      setAiImportBusy(true, 'Processing...');
+      uploadedFile = await waitForGeminiFile(settings.apiKey, uploadedFile, (waited) => {
+        setAiImportBusy(true, 'Processing ' + Math.round(waited / 1000) + 's');
+      });
       filePart = {
         file_data: {
           mime_type: uploadedFile.mimeType || guessMimeType(file),
@@ -3613,13 +3690,29 @@ async function handleAiImportFile(file) {
     }
 
     setAiImportBusy(true, 'Thinking...');
-    const response = await generateCheatsheetWithGemini(settings, filePart, file);
+    let response;
+    try {
+      response = await generateCheatsheetWithGemini(settings, filePart, file);
+    } catch (err) {
+      // Gemini can still report the file as unusable right after it turns
+      // ACTIVE - give it one more settling round before failing the import.
+      if (!uploadedFile || !isGeminiFileNotReadyError(err)) throw err;
+      setAiImportBusy(true, 'Still processing...');
+      await delay(4000);
+      uploadedFile = await waitForGeminiFile(
+        settings.apiKey,
+        Object.assign({}, uploadedFile, { state: 'PROCESSING' }),
+        (waited) => setAiImportBusy(true, 'Processing ' + Math.round(waited / 1000) + 's')
+      );
+      setAiImportBusy(true, 'Thinking...');
+      response = await generateCheatsheetWithGemini(settings, filePart, file);
+    }
     applyGeminiCheatsheet(response, file.name);
     toast('Cheatsheet generated from file', 'success');
   } catch (err) {
     console.error('Gemini import failed', err);
     setSaveState('error', 'Gemini import failed');
-    toast('Gemini import failed: ' + (err.message || err), 'error');
+    toast('Gemini import failed: ' + describeAiImportError(err, file), 'error');
   } finally {
     setAiImportBusy(false);
     deleteGeminiUploadedFile(settings.apiKey, uploadedFile);
