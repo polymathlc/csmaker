@@ -1521,6 +1521,31 @@ const GEMINI_DEFAULT_MODEL = 'gemini-3.1-pro-preview';
 const GEMINI_INLINE_FILE_LIMIT_BYTES = 12 * 1024 * 1024;
 const GEMINI_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
 const GEMINI_FILE_PROCESSING_TIMEOUT_MS = 6 * 60 * 1000;
+/* The Files API happily stores a 2 GB file, but the model only parses PDFs up
+   to 50 MB - past that generateContent answers "Request contains an invalid
+   argument" no matter how few pages the document has. Anything over this cut-off
+   gets rendered to page images in the browser first. */
+const GEMINI_PDF_PARSE_LIMIT_BYTES = 45 * 1024 * 1024;
+/* Budget for the base64 characters of all rendered pages in one request. */
+const PDF_RENDER_BUDGET_CHARS = 13 * 1024 * 1024;
+const PDF_RENDER_MAX_PAGES = 120;
+const PDF_RENDER_MIN_QUALITY = 0.4;
+const PDF_RENDER_START_QUALITY = 0.72;
+const IMAGE_DOWNSCALE_MAX_EDGE = 2000;
+const PDFJS_SOURCES = [
+  {
+    lib: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
+    worker: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+  },
+  {
+    lib: 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js',
+    worker: 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js',
+  },
+  {
+    lib: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js',
+    worker: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js',
+  },
+];
 
 firebase.initializeApp(FIREBASE_CONFIG);
 const auth = firebase.auth();
@@ -3279,6 +3304,147 @@ function guessMimeType(file) {
   return 'application/octet-stream';
 }
 
+function isPdfFile(file) {
+  return !!file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || ''));
+}
+
+function loadScriptOnce(url) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-src="' + url + '"]');
+    if (existing) {
+      if (existing.dataset.loaded === '1') return resolve();
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error('Could not load ' + url)));
+      return;
+    }
+    const el = document.createElement('script');
+    el.src = url;
+    el.dataset.src = url;
+    el.onload = () => { el.dataset.loaded = '1'; resolve(); };
+    el.onerror = () => { el.remove(); reject(new Error('Could not load ' + url)); };
+    document.head.appendChild(el);
+  });
+}
+
+/* pdf.js is only needed for oversized PDFs, so it is fetched on demand rather
+   than on every page load. Mirrors are tried in turn in case one is blocked. */
+async function ensurePdfJs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  let lastErr = null;
+  for (const source of PDFJS_SOURCES) {
+    try {
+      await loadScriptOnce(source.lib);
+      if (!window.pdfjsLib) throw new Error('pdf.js did not initialise');
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = source.worker;
+      return window.pdfjsLib;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw new Error('Could not load the PDF reader' + (lastErr ? ' (' + lastErr.message + ')' : ''));
+}
+
+function base64FromDataUrl(dataUrl) {
+  const text = String(dataUrl || '');
+  const comma = text.indexOf(',');
+  return comma >= 0 ? text.slice(comma + 1) : text;
+}
+
+/* Encode a canvas as JPEG, dropping quality until it fits the byte budget. */
+function encodeCanvasWithinBudget(canvas, budgetChars) {
+  let quality = PDF_RENDER_START_QUALITY;
+  let data = base64FromDataUrl(canvas.toDataURL('image/jpeg', quality));
+  while (data.length > budgetChars && quality > PDF_RENDER_MIN_QUALITY) {
+    quality = Math.max(PDF_RENDER_MIN_QUALITY, quality - 0.12);
+    data = base64FromDataUrl(canvas.toDataURL('image/jpeg', quality));
+  }
+  return data;
+}
+
+/* Turn an over-sized PDF into inline page images small enough for Gemini to
+   read. Pages are scaled down as the page count grows so the whole document
+   still fits in one request. */
+async function renderPdfToImageParts(file, onProgress) {
+  const pdfjsLib = await ensurePdfJs();
+  const buffer = await file.arrayBuffer();
+  let doc;
+  try {
+    doc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+  } catch (err) {
+    const message = String((err && err.message) || err || '');
+    if (/password/i.test(message)) throw new Error('That PDF is password protected');
+    throw new Error('Could not read that PDF: ' + (message || 'unknown error'));
+  }
+
+  const totalPages = doc.numPages;
+  const pageCount = Math.min(totalPages, PDF_RENDER_MAX_PAGES);
+  const maxEdge = pageCount <= 12 ? 1600 : (pageCount <= 30 ? 1300 : 1000);
+  const perPageChars = Math.floor(PDF_RENDER_BUDGET_CHARS / pageCount);
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const parts = [];
+  let usedChars = 0;
+  let renderedPages = 0;
+
+  try {
+    for (let n = 1; n <= pageCount; n++) {
+      const page = await doc.getPage(n);
+      const base = page.getViewport({ scale: 1 });
+      const longestEdge = Math.max(base.width, base.height) || 1;
+      const viewport = page.getViewport({ scale: clamp(maxEdge / longestEdge, 0.2, 2) });
+      canvas.width = Math.max(1, Math.round(viewport.width));
+      canvas.height = Math.max(1, Math.round(viewport.height));
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      page.cleanup();
+
+      const data = encodeCanvasWithinBudget(canvas, perPageChars);
+      if (usedChars + data.length > PDF_RENDER_BUDGET_CHARS && parts.length) break;
+      parts.push({ inline_data: { mime_type: 'image/jpeg', data } });
+      usedChars += data.length;
+      renderedPages = n;
+      if (onProgress) onProgress(n, pageCount);
+    }
+  } finally {
+    canvas.width = 0;
+    canvas.height = 0;
+    if (doc.destroy) doc.destroy();
+  }
+
+  if (!parts.length) throw new Error('That PDF had no readable pages');
+  return { parts, renderedPages, totalPages };
+}
+
+function loadImageElement(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not decode that image')); };
+    img.src = url;
+  });
+}
+
+/* Very large photos are shrunk in the browser so they can go inline instead of
+   through a slow upload. Callers fall back to the upload path if this fails. */
+async function downscaleImageToPart(file) {
+  const img = await loadImageElement(file);
+  const longestEdge = Math.max(img.naturalWidth, img.naturalHeight) || 1;
+  const scale = clamp(IMAGE_DOWNSCALE_MAX_EDGE / longestEdge, 0.05, 1);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  const data = encodeCanvasWithinBudget(canvas, PDF_RENDER_BUDGET_CHARS);
+  canvas.width = 0;
+  canvas.height = 0;
+  return { inline_data: { mime_type: 'image/jpeg', data } };
+}
+
 function readFileAsBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -3296,7 +3462,15 @@ async function geminiError(resp, step) {
   let message = '';
   try {
     const payload = await resp.json();
-    message = (payload && payload.error && payload.error.message) || '';
+    const error = (payload && payload.error) || {};
+    message = error.message || '';
+    // Google usually names the offending field in error.details - without it
+    // every 400 reads as the same unhelpful "invalid argument".
+    const violations = (error.details || [])
+      .reduce((all, detail) => all.concat(detail.fieldViolations || []), [])
+      .map(v => [v.field, v.description].filter(Boolean).join(' '))
+      .filter(Boolean);
+    if (violations.length) message += ' (' + violations.join('; ') + ')';
   } catch (_) { /* body was not JSON */ }
   if (!message) message = resp.status + ' ' + resp.statusText;
   return step ? step + ': ' + message : message;
@@ -3378,9 +3552,9 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/* A 69 MB PDF stays in PROCESSING for minutes. Handing a non-ACTIVE file to
-   generateContent is what produces "Request contains an invalid argument", so
-   poll until it really is ready rather than giving up after a fixed count. */
+/* A large file stays in PROCESSING for minutes, and generateContent rejects a
+   file that is not ACTIVE yet, so poll until it really is ready rather than
+   giving up after a fixed count and sending it anyway. */
 async function waitForGeminiFile(apiKey, file, onWait) {
   if (!file || !file.name) return file;
   let current = file;
@@ -3422,9 +3596,9 @@ function deleteGeminiUploadedFile(apiKey, file) {
   ).catch(() => {});
 }
 
-function cheatsheetPrompt(file) {
+function cheatsheetPrompt(file, sourceLabel) {
   return [
-    'Convert the uploaded ' + guessMimeType(file) + ' into a concise classroom cheatsheet.',
+    'Convert the uploaded ' + (sourceLabel || guessMimeType(file)) + ' into a concise classroom cheatsheet.',
     'Return JSON only. No Markdown, no code fences.',
     'The JSON shape must be:',
     '{"title":"...","subtitle":"...","tiles":[{"heading":"...","bullets":["..."],"note":"optional"}]}',
@@ -3457,9 +3631,10 @@ function cheatsheetResponseSchema() {
   };
 }
 
-async function generateCheatsheetWithGemini(settings, filePart, file) {
+async function generateCheatsheetWithGemini(settings, fileParts, file, sourceLabel) {
   const modelPath = geminiModelPath(settings.model);
-  const resp = await fetch(
+  const parts = Array.isArray(fileParts) ? fileParts : [fileParts];
+  const resp = await geminiFetch(
     'https://generativelanguage.googleapis.com/v1beta/' + modelPath + ':generateContent?key=' +
       encodeURIComponent(settings.apiKey),
     {
@@ -3468,10 +3643,7 @@ async function generateCheatsheetWithGemini(settings, filePart, file) {
       body: JSON.stringify({
         contents: [{
           role: 'user',
-          parts: [
-            { text: cheatsheetPrompt(file) },
-            filePart,
-          ],
+          parts: [{ text: cheatsheetPrompt(file, sourceLabel) }].concat(parts),
         }],
         generationConfig: {
           temperature: 0.18,
@@ -3641,16 +3813,18 @@ function applyGeminiCheatsheet(raw, sourceName) {
 
 function isGeminiFileNotReadyError(err) {
   const message = String((err && err.message) || err || '');
-  return /ACTIVE state|not active|still processing|invalid argument/i.test(message);
+  return /ACTIVE state|not active|still processing|FAILED_PRECONDITION/i.test(message);
 }
 
 /* "Request contains an invalid argument" on its own tells a teacher nothing.
-   Add the likely cause when the source file is big enough to hit a limit. */
+   Add the likely cause when the source is big enough to hit a model limit. */
 function describeAiImportError(err, file) {
   const message = String((err && err.message) || err || 'Something went wrong');
-  const bigFile = file && file.size > GEMINI_INLINE_FILE_LIMIT_BYTES;
-  if (bigFile && /invalid argument|too large|exceeds|token count|page/i.test(message)) {
-    return message + ' This file may have too many pages for Gemini (about 1000 max) - try splitting it.';
+  if (/invalid argument|too large|exceeds|token count/i.test(message)) {
+    if (isPdfFile(file)) {
+      return message + ' Gemini only reads PDFs up to 50 MB or 1000 pages - try a shorter or lighter PDF.';
+    }
+    return message + ' The file may be too large for Gemini to read.';
   }
   return message;
 }
@@ -3669,10 +3843,35 @@ async function handleAiImportFile(file) {
     setAiImportBusy(true, 'Reading...');
     setSaveState('saving', 'Gemini import running...');
     let filePart;
-    if (file.type && file.type.startsWith('image/') && file.size <= GEMINI_INLINE_FILE_LIMIT_BYTES) {
+    let sourceLabel = null;
+    let shrinkNote = '';
+    const isImage = !!(file.type && file.type.startsWith('image/'));
+
+    if (isImage && file.size <= GEMINI_INLINE_FILE_LIMIT_BYTES) {
       const data = await readFileAsBase64(file);
       filePart = { inline_data: { mime_type: guessMimeType(file), data } };
-    } else {
+    } else if (isPdfFile(file) && file.size > GEMINI_PDF_PARSE_LIMIT_BYTES) {
+      /* Gemini refuses to parse PDFs over 50 MB, so rasterise the pages here
+         and send those instead of the original file. */
+      setAiImportBusy(true, 'Shrinking PDF...');
+      const rendered = await renderPdfToImageParts(file, (done, total) => {
+        setAiImportBusy(true, 'Shrinking page ' + done + '/' + total);
+      });
+      filePart = rendered.parts;
+      sourceLabel = 'page images of a PDF';
+      if (rendered.renderedPages < rendered.totalPages) {
+        shrinkNote = ' (first ' + rendered.renderedPages + ' of ' + rendered.totalPages + ' pages)';
+      }
+    } else if (isImage) {
+      setAiImportBusy(true, 'Shrinking image...');
+      try {
+        filePart = await downscaleImageToPart(file);
+      } catch (_) {
+        filePart = null; // fall through to the upload path below
+      }
+    }
+
+    if (!filePart) {
       setAiImportBusy(true, 'Uploading 0%');
       uploadedFile = await uploadFileToGemini(settings.apiKey, file, (sent, total) => {
         setAiImportBusy(true, 'Uploading ' + Math.round((sent / total) * 100) + '%');
@@ -3692,7 +3891,7 @@ async function handleAiImportFile(file) {
     setAiImportBusy(true, 'Thinking...');
     let response;
     try {
-      response = await generateCheatsheetWithGemini(settings, filePart, file);
+      response = await generateCheatsheetWithGemini(settings, filePart, file, sourceLabel);
     } catch (err) {
       // Gemini can still report the file as unusable right after it turns
       // ACTIVE - give it one more settling round before failing the import.
@@ -3705,10 +3904,10 @@ async function handleAiImportFile(file) {
         (waited) => setAiImportBusy(true, 'Processing ' + Math.round(waited / 1000) + 's')
       );
       setAiImportBusy(true, 'Thinking...');
-      response = await generateCheatsheetWithGemini(settings, filePart, file);
+      response = await generateCheatsheetWithGemini(settings, filePart, file, sourceLabel);
     }
     applyGeminiCheatsheet(response, file.name);
-    toast('Cheatsheet generated from file', 'success');
+    toast('Cheatsheet generated from file' + shrinkNote, 'success');
   } catch (err) {
     console.error('Gemini import failed', err);
     setSaveState('error', 'Gemini import failed');
